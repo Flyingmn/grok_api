@@ -1,0 +1,17 @@
+{
+  "ai_studio": {
+    "api_port": 8812,
+    "management_port": 8813,
+    "service_name": "AI Studio"
+  },
+  "doubao": {
+    "api_port": 8814,
+    "management_port": 8815,
+    "service_name": "豆包"
+  },
+  "default": {
+    "host": "0.0.0.0",
+    "reload": false,
+    "log_level": "info"
+  }
+}
