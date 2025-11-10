@@ -86,30 +86,30 @@ class CrawlerInstance:
                 self.playwright,
                 headless=self.config.headless,
                 # 添加字符编码相关参数
-                args=[
-                    '--lang=zh-CN',
-                    '--accept-lang=zh-CN,zh;q=0.9,en;q=0.8',
-                    '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor'
-                ]
+                # args=[
+                #     '--lang=zh-CN',
+                #     '--accept-lang=zh-CN,zh;q=0.9,en;q=0.8',
+                #     '--disable-web-security',
+                #     '--disable-features=VizDisplayCompositor'
+                # ]
             )
             
             # 创建浏览器上下文
             context_options = {
                 "ignore_https_errors": True,
                 # 设置语言和编码
-                "locale": "zh-CN",
-                "extra_http_headers": {
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "Accept-Charset": "utf-8"
-                }
+                # "locale": "zh-CN",
+                # "extra_http_headers": {
+                #     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                #     "Accept-Charset": "utf-8"
+                # }
             }
             
             if self.config.user_agent:
                 context_options["user_agent"] = self.config.user_agent
                 
             if self.config.proxy:
-                context_options["proxy"] = self.config.proxy
+                context_options["proxy"] = {"server": self.config.proxy}
                 
             self.context = await self.browser.new_context(**context_options)
             
