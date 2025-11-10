@@ -339,10 +339,17 @@ python doubao_main.py      # 豆包多实例
 
 **❌ manifest.json is missing 错误**
 
-这是camoufox浏览器安装不完整导致的，使用以下方法修复：
+这是camoufox的一个已知问题（[GitHub Issue #308](https://github.com/daijro/camoufox/issues/308)），通常由网络问题或浏览器文件下载不完整导致。
 
+**快速修复方法：**
 ```bash
-# 方法1：运行自动修复脚本
+# 最简单的修复方法
+python -m camoufox fetch
+```
+
+**完整修复方案：**
+```bash
+# 方法1：运行自动修复脚本（推荐）
 python fix_camoufox.py
 
 # 方法2：使用一键修复脚本
@@ -356,8 +363,14 @@ install_fix.bat
 pip uninstall camoufox -y
 pip cache purge
 pip install camoufox>=0.2.0 --force-reinstall --no-cache-dir
+python -m camoufox fetch
 python -m playwright install
 ```
+
+**如果仍然失败：**
+- 检查网络连接是否稳定
+- 在中国大陆可能需要配置代理或使用VPN
+- 尝试更换网络环境（如使用手机热点）
 
 **实例启动失败**
 - 检查是否已安装camoufox浏览器

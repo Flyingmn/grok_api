@@ -14,6 +14,9 @@ pip cache purge
 echo 📥 重新安装camoufox...
 pip install camoufox>=0.2.0 --force-reinstall --no-cache-dir
 
+echo 📥 运行camoufox fetch下载浏览器文件...
+python -m camoufox fetch
+
 echo 📥 安装playwright浏览器...
 python -m playwright install
 

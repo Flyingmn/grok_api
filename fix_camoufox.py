@@ -124,6 +124,19 @@ def reinstall_camoufox():
             logger.warning("安装警告:")
             logger.warning(result.stderr)
         
+        # 运行camoufox fetch命令来下载浏览器文件
+        logger.info("运行camoufox fetch下载浏览器文件...")
+        try:
+            fetch_result = subprocess.run([sys.executable, "-m", "camoufox", "fetch"], 
+                                        check=True, capture_output=True, text=True, timeout=300)
+            logger.info("Camoufox fetch输出:")
+            logger.info(fetch_result.stdout)
+        except subprocess.TimeoutExpired:
+            logger.warning("camoufox fetch超时，但可能已部分完成")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"camoufox fetch失败: {e}")
+            logger.warning(f"错误输出: {e.stderr}")
+        
         return True
         
     except subprocess.CalledProcessError as e:
@@ -191,10 +204,57 @@ def test_camoufox():
         logger.error(f"测试camoufox失败: {e}")
         return False
 
+def fix_known_issue_308():
+    """修复GitHub issue #308: manifest.json is missing错误"""
+    logger.info("🔧 修复已知问题: manifest.json is missing (GitHub issue #308)")
+    
+    try:
+        # 这是一个已知的camoufox问题，通常由以下原因导致：
+        # 1. camoufox fetch命令未运行或失败
+        # 2. 浏览器文件下载不完整
+        # 3. 代理或网络问题导致下载失败
+        
+        logger.info("运行camoufox fetch命令...")
+        result = subprocess.run([sys.executable, "-m", "camoufox", "fetch"], 
+                               check=True, capture_output=True, text=True, timeout=300)
+        
+        logger.info("Camoufox fetch成功:")
+        logger.info(result.stdout)
+        
+        # 验证修复结果
+        if check_camoufox_browser_files():
+            logger.success("✅ 问题已修复！")
+            return True
+        else:
+            logger.warning("fetch命令执行成功，但文件仍不完整，尝试重新安装...")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logger.error("camoufox fetch超时，可能是网络问题")
+        logger.info("建议检查网络连接或使用代理")
+        return False
+    except subprocess.CalledProcessError as e:
+        logger.error(f"camoufox fetch失败: {e}")
+        if e.stderr:
+            logger.error(f"错误输出: {e.stderr}")
+        
+        # 检查是否是网络或代理问题
+        if "timeout" in str(e).lower() or "network" in str(e).lower():
+            logger.info("💡 可能的解决方案:")
+            logger.info("1. 检查网络连接")
+            logger.info("2. 如果在中国大陆，可能需要配置代理")
+            logger.info("3. 尝试使用VPN或更换网络环境")
+        
+        return False
+    except Exception as e:
+        logger.error(f"修复过程中出错: {e}")
+        return False
+
 def main():
     """主函数"""
     logger.info("🔍 开始诊断Camoufox安装问题...")
     logger.info("=" * 60)
+    logger.info("参考: https://github.com/daijro/camoufox/issues/308")
     
     # 1. 检查Python版本
     logger.info("1. 检查Python版本")
@@ -217,13 +277,18 @@ def main():
     # 3. 检查浏览器文件
     logger.info("\n3. 检查浏览器文件完整性")
     if not check_camoufox_browser_files():
-        logger.warning("Camoufox浏览器文件不完整，尝试重新安装...")
+        logger.warning("Camoufox浏览器文件不完整，尝试修复已知问题...")
         
-        # 4. 重新安装camoufox
-        logger.info("\n4. 重新安装Camoufox")
-        if not reinstall_camoufox():
-            logger.error("重新安装失败")
-            return False
+        # 3.1 尝试修复已知问题 #308
+        logger.info("\n3.1 尝试修复GitHub issue #308")
+        if fix_known_issue_308():
+            logger.success("问题已通过camoufox fetch修复")
+        else:
+            # 4. 重新安装camoufox
+            logger.info("\n4. 重新安装Camoufox")
+            if not reinstall_camoufox():
+                logger.error("重新安装失败")
+                return False
         
         # 5. 安装playwright浏览器
         logger.info("\n5. 安装Playwright浏览器")
