@@ -4,7 +4,7 @@
 基于Camoufox和Playwright的爬虫框架
 支持多实例、多进程、异步操作
 """
-
+import os
 import asyncio
 import json
 import time
@@ -77,6 +77,9 @@ class CrawlerInstance:
         """启动爬虫实例"""
         try:
             logger.info(f"启动爬虫实例 {self.instance_id}")
+            
+            #设置HOME=/root
+            os.environ["HOME"] = "/root"
             
             # 启动Playwright
             self.playwright = await async_playwright().start()

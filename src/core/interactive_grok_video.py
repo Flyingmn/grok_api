@@ -29,20 +29,24 @@ class GrokVideoInteractiveClient:
         # 注意：这些选择器需要根据实际页面结构调整
         self.selectors = {
             # 登录检测相关
-            "login_modal": '[data-testid="login"]',
-            "login_button": 'button:has-text("Sign in")',
+            "login_modal": '[href="/sign-in"]',
+            "login_button": '[href="/sign-in"]',
             
             # 输入框相关
-            "input_container": 'textarea[placeholder*="prompt"], textarea[placeholder*="message"]',
-            "text_input": 'textarea[data-testid="composer-text-input"], textarea[role="textbox"]',
-            "send_button": 'button[data-testid="send-button"], button[aria-label*="Send"]',
+            #class包含text-base的form
+            "input_container": 'form[class*="text-base"]',
+            #contenteditable="true"的div，并且class包含text-primary的div下面的p标签
+            "text_input": 'div[contenteditable="true"][class*="text-primary"] p',
+            #div的class包含text-fg-invert 子元素svg包含class包含stroke-[2] relative
+            "send_button": 'div[class*="text-fg-invert"] svg[class*="stroke-[2] relative"]',
             
             # 视频生成相关
             "video_generation_button": 'button:has-text("Generate"), button[data-testid="generate-video"]',
             "video_settings": '[data-testid="video-settings"]',
             
             # 文件上传
-            "file_input": 'input[type="file"]',
+            #svg包含class stroke-[2] text-primary transition-colors duration-100
+            "file_input": 'svg[class*="stroke-[2] text-primary transition-colors duration-100"]',
         }
     
     async def setup(self):
@@ -112,7 +116,7 @@ class GrokVideoInteractiveClient:
             
             # 导航到Grok主页
             try:
-                await self.instance.page.goto("https://grok.com/", 
+                await self.instance.page.goto("https://grok.com/imagine", 
                                             wait_until="domcontentloaded", 
                                             timeout=15000)
                 logger.success("页面导航成功")
@@ -127,7 +131,7 @@ class GrokVideoInteractiveClient:
                     else:
                         # 如果URL不对，再尝试一次
                         logger.info("尝试重新导航...")
-                        await self.instance.page.goto("https://grok.com/", 
+                        await self.instance.page.goto("https://grok.com/imagine", 
                                                     wait_until="load", 
                                                     timeout=10000)
                 except Exception as retry_e:
@@ -186,7 +190,7 @@ class GrokVideoInteractiveClient:
             
             # 检查是否在正确的页面
             current_url = self.instance.page.url
-            if "grok.com" not in current_url:
+            if "https://grok.com/imagine" not in current_url:
                 logger.warning("不在Grok页面，尝试导航...")
                 if not await self.navigate_to_grok():
                     return False
