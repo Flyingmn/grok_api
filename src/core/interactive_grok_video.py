@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Grok视频生成交互客户端
+用于与Grok视频生成页面交互，发送提示词并获取生成的视频
+"""
+
+import asyncio
+import json
+import threading
+from typing import Dict, Any, Optional
+from pathlib import Path
+from loguru import logger
+from .crawler_framework import CrawlerFramework, CrawlerConfig
+import sys
+
+
+class GrokVideoInteractiveClient:
+    """Grok视频生成交互客户端类"""
+    
+    def __init__(self):
+        self.framework = CrawlerFramework()
+        self.instance_id = "grok_video_interactive"
+        self.instance = None
+        self.api_responses = []
+        self.waiting_for_response = False
+        
+        # DOM选择器 - 基于Grok视频生成的DOM结构
+        # 注意：这些选择器需要根据实际页面结构调整
+        self.selectors = {
+            # 登录检测相关
+            "login_modal": '[data-testid="login"]',
+            "login_button": 'button:has-text("Sign in")',
+            
+            # 输入框相关
+            "input_container": 'textarea[placeholder*="prompt"], textarea[placeholder*="message"]',
+            "text_input": 'textarea[data-testid="composer-text-input"], textarea[role="textbox"]',
+            "send_button": 'button[data-testid="send-button"], button[aria-label*="Send"]',
+            
+            # 视频生成相关
+            "video_generation_button": 'button:has-text("Generate"), button[data-testid="generate-video"]',
+            "video_settings": '[data-testid="video-settings"]',
+            
+            # 文件上传
+            "file_input": 'input[type="file"]',
+        }
+    
+    async def setup(self):
+        """初始化设置"""
+        try:
+            logger.info("初始化Grok视频生成交互客户端...")
+            
+            # 创建配置
+            config = CrawlerConfig()
+            config.headless = False  # 显示浏览器窗口
+            config.timeout = 30000
+            
+            # 创建实例
+            self.instance = self.framework.create_instance(self.instance_id, config)
+            await self.instance.start()
+            
+            # 设置网络监听
+            await self.setup_network_listener()
+            
+            # 加载已保存的cookies
+            await self.load_cookies()
+            
+            logger.success("初始化完成")
+            return True
+            
+        except Exception as e:
+            logger.error(f"初始化失败: {e}")
+            return False
+    
+    async def load_cookies(self):
+        """加载保存的cookies"""
+        try:
+            # 使用实例ID作为cookies文件名
+            cookies_file = Path("data/cookies") / f"{self.instance_id}_session.json"
+            if cookies_file.exists():
+                logger.info(f"发现已保存的登录状态，正在加载... ({self.instance_id})")
+                with open(cookies_file, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                await self.instance.context.add_cookies(cookies)
+                logger.success(f"登录状态加载成功 ({self.instance_id})")
+            else:
+                logger.info(f"未找到保存的登录状态 ({self.instance_id})")
+        except Exception as e:
+            logger.warning(f"加载登录状态失败 ({self.instance_id}): {e}")
+    
+    async def save_cookies(self):
+        """保存当前cookies"""
+        try:
+            cookies_dir = Path("data/cookies")
+            cookies_dir.mkdir(exist_ok=True)
+            
+            cookies = await self.instance.context.cookies()
+            # 使用实例ID作为cookies文件名
+            cookies_file = cookies_dir / f"{self.instance_id}_session.json"
+            
+            with open(cookies_file, 'w', encoding='utf-8') as f:
+                json.dump(cookies, f, ensure_ascii=False, indent=2)
+            
+            logger.success(f"登录状态已保存到: {cookies_file}")
+        except Exception as e:
+            logger.error(f"保存登录状态失败: {e}")
+    
+    async def navigate_to_grok(self):
+        """导航到Grok页面"""
+        try:
+            logger.info("正在访问Grok页面...")
+            
+            # 导航到Grok主页
+            try:
+                await self.instance.page.goto("https://grok.com/", 
+                                            wait_until="domcontentloaded", 
+                                            timeout=15000)
+                logger.success("页面导航成功")
+            except Exception as nav_e:
+                logger.warning(f"导航可能超时，检查页面状态: {nav_e}")
+                
+                # 检查页面是否实际已经加载
+                try:
+                    current_url = self.instance.page.url
+                    if "grok.com" in current_url:
+                        logger.info(f"页面已加载，当前URL: {current_url}")
+                    else:
+                        # 如果URL不对，再尝试一次
+                        logger.info("尝试重新导航...")
+                        await self.instance.page.goto("https://grok.com/", 
+                                                    wait_until="load", 
+                                                    timeout=10000)
+                except Exception as retry_e:
+                    logger.error(f"重试导航失败: {retry_e}")
+                    return False
+            
+            # 等待页面稳定
+            await asyncio.sleep(3)
+            
+            # 检查页面是否可用
+            try:
+                # 尝试查找页面的基本元素
+                await self.instance.page.wait_for_selector('body', timeout=5000)
+                logger.success("页面基本元素已加载")
+            except Exception as e:
+                logger.warning(f"等待页面元素超时，但继续执行: {e}")
+            
+            # 尝试截图
+            try:
+                await self.instance.screenshot("grok_home.png")
+            except Exception as e:
+                logger.warning(f"截图失败，跳过: {e}")
+            
+            logger.success("成功访问Grok页面")
+            return True
+            
+        except Exception as e:
+            logger.error(f"访问Grok页面失败: {e}")
+            return False
+    
+    async def check_login_required(self):
+        """检测是否出现登录弹窗"""
+        try:
+            # 检查登录弹窗是否存在
+            login_modal = await self.instance.page.query_selector(self.selectors["login_modal"])
+            if login_modal and await login_modal.is_visible():
+                logger.error("检测到登录弹窗，需要用户登录")
+                return True
+            
+            # 检查登录按钮
+            login_button = await self.instance.page.query_selector(self.selectors["login_button"])
+            if login_button and await login_button.is_visible():
+                logger.error("检测到登录按钮，需要用户登录")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"检测登录状态失败: {e}")
+            return False
+    
+    async def ensure_video_skill_ready(self):
+        """确保视频生成功能已准备就绪"""
+        try:
+            logger.info("确保视频生成功能已准备就绪...")
+            
+            # 检查是否在正确的页面
+            current_url = self.instance.page.url
+            if "grok.com" not in current_url:
+                logger.warning("不在Grok页面，尝试导航...")
+                if not await self.navigate_to_grok():
+                    return False
+            
+            # 等待页面加载完成
+            await asyncio.sleep(2)
+            
+            # 查找输入框
+            text_input = await self.instance.page.query_selector(self.selectors["text_input"])
+            if not text_input:
+                # 尝试备用选择器
+                text_input = await self.instance.page.query_selector('textarea')
+            
+            if text_input and await text_input.is_visible():
+                logger.success("视频生成功能已就绪")
+                return True
+            else:
+                logger.warning("未找到输入框，但继续执行")
+                return True  # 即使找不到也继续，可能页面结构不同
+                
+        except Exception as e:
+            logger.error(f"确保视频生成功能就绪失败: {e}")
+            return False
+    
+    async def send_message(self, message: str):
+        """发送消息"""
+        try:
+            logger.info(f"正在发送消息: {message}")
+            
+            # 确保视频生成功能已准备就绪
+            if not await self.ensure_video_skill_ready():
+                logger.error("视频生成功能未就绪")
+                return False
+            
+            # 清空之前的响应
+            self.api_responses.clear()
+            
+            # 查找输入框
+            text_input = await self.instance.page.query_selector(self.selectors["text_input"])
+            if not text_input:
+                text_input = await self.instance.page.query_selector('textarea')
+            
+            if text_input and await text_input.is_visible():
+                # 点击输入框获得焦点
+                await text_input.click()
+                await asyncio.sleep(0.5)
+                
+                # 清空输入框
+                await text_input.fill("")
+                await asyncio.sleep(0.3)
+                
+                # 输入消息
+                await text_input.fill(message)
+                await asyncio.sleep(1)
+                
+                logger.success(f"文本已填充到输入框")
+                
+                # 查找发送按钮
+                send_button = await self.instance.page.query_selector(self.selectors["send_button"])
+                if not send_button:
+                    # 尝试通过Enter键发送
+                    await text_input.press("Enter")
+                    logger.info("使用Enter键发送消息")
+                else:
+                    await send_button.click()
+                    logger.info("点击发送按钮")
+                
+                # 设置等待响应标志
+                self.waiting_for_response = True
+                
+                # 等待一下让请求发送
+                await asyncio.sleep(2)
+                
+                logger.success("消息已发送")
+                return True
+            else:
+                logger.error("未找到输入框")
+                return False
+                
+        except Exception as e:
+            logger.error(f"发送消息失败: {e}")
+            self.waiting_for_response = False
+            return False
+    
+    async def setup_network_listener(self):
+        """设置网络监听器，监听API响应"""
+        try:
+            logger.info("设置网络监听器...")
+            
+            async def handle_response(response):
+                """处理网络响应"""
+                try:
+                    url = response.url
+                    
+                    # 监听Grok的API响应
+                    if "grok.com" in url and ("api" in url.lower() or "generate" in url.lower() or "video" in url.lower()):
+                        logger.info(f"检测到Grok API响应: {url}")
+                        await self.handle_api_response(response)
+                        
+                except Exception as e:
+                    logger.debug(f"处理响应时出错: {e}")
+            
+            # 监听所有响应
+            self.instance.page.on("response", handle_response)
+            
+            logger.success("网络监听器设置完成")
+            
+        except Exception as e:
+            logger.error(f"设置网络监听器失败: {e}")
+    
+    async def handle_api_response(self, response):
+        """处理API响应"""
+        try:
+            url = response.url
+            status = response.status
+            
+            if status != 200:
+                logger.debug(f"收到非200响应: {url} (状态: {status})")
+                return
+            
+            # 尝试解析响应
+            try:
+                response_data = await response.json()
+                logger.info(f"收到JSON响应: {url}")
+                
+                # 保存响应
+                self.api_responses.append({
+                    "url": url,
+                    "status": status,
+                    "data": response_data,
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+                
+                # 检查是否包含视频信息
+                if self._extract_video_info(response_data):
+                    self.waiting_for_response = False
+                    logger.success("检测到视频生成完成")
+                    
+            except Exception as json_error:
+                # 如果不是JSON，可能是SSE流
+                try:
+                    text = await response.text()
+                    if "text/event-stream" in response.headers.get("content-type", ""):
+                        logger.info("检测到SSE流响应")
+                        await self.handle_sse_stream(response, text)
+                except Exception as text_error:
+                    logger.debug(f"解析响应失败: {json_error}, {text_error}")
+                    
+        except Exception as e:
+            logger.error(f"处理API响应失败: {e}")
+    
+    def _extract_video_info(self, data: Dict[str, Any]) -> bool:
+        """从响应数据中提取视频信息"""
+        try:
+            # 根据Grok的响应结构提取视频URL
+            # 这里需要根据实际API响应结构调整
+            if isinstance(data, dict):
+                # 查找常见的视频字段
+                video_fields = ["video", "video_url", "videoUrl", "url", "output", "result"]
+                
+                for field in video_fields:
+                    if field in data:
+                        value = data[field]
+                        if isinstance(value, str) and ("http" in value or ".mp4" in value or ".webm" in value):
+                            logger.success(f"找到视频URL: {value}")
+                            return True
+                        elif isinstance(value, dict):
+                            if self._extract_video_info(value):
+                                return True
+                
+                # 递归查找嵌套结构
+                for key, value in data.items():
+                    if isinstance(value, (dict, list)):
+                        if self._extract_video_info(value if isinstance(value, dict) else {"items": value}):
+                            return True
+            
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and self._extract_video_info(item):
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"提取视频信息失败: {e}")
+            return False
+    
+    async def handle_sse_stream(self, response, text: str):
+        """处理SSE流响应"""
+        try:
+            logger.info("处理SSE流响应...")
+            
+            # 按照SSE格式解析事件
+            events = text.split('\n\n')
+            
+            for event in events:
+                if not event.strip():
+                    continue
+                
+                lines = event.strip().split('\n')
+                data_line = None
+                
+                for line in lines:
+                    if line.startswith('data: '):
+                        data_line = line[6:]  # 去掉"data: "前缀
+                        break
+                
+                if not data_line:
+                    continue
+                
+                try:
+                    event_data = json.loads(data_line)
+                    
+                    # 检查是否包含视频信息
+                    if self._extract_video_info(event_data):
+                        self.waiting_for_response = False
+                        logger.success("从SSE流中检测到视频生成完成")
+                        break
+                        
+                except json.JSONDecodeError:
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"处理SSE流失败: {e}")
+    
+    async def cleanup(self):
+        """清理资源"""
+        try:
+            logger.info("清理Grok视频生成客户端资源...")
+            
+            if self.instance:
+                await self.instance.stop()
+                self.instance = None
+            
+            logger.success("资源清理完成")
+            
+        except Exception as e:
+            logger.error(f"清理资源失败: {e}")
+    
+    async def run_interactive_session(self):
+        """运行交互会话"""
+        try:
+            logger.info("启动Grok视频生成交互会话...")
+            
+            # 初始化
+            if not await self.setup():
+                logger.error("初始化失败")
+                return
+            
+            # 导航到Grok
+            if not await self.navigate_to_grok():
+                logger.error("导航到Grok失败")
+                return
+            
+            # 检查登录状态
+            if await self.check_login_required():
+                logger.warning("需要登录，请手动登录后继续")
+                input("按Enter键继续（确保已登录）...")
+            
+            print("\n" + "=" * 50)
+            print("🎬 Grok视频生成交互会话已启动")
+            print("=" * 50)
+            print("提示：")
+            print("  - 输入提示词生成视频")
+            print("  - 输入 'quit' 或 'exit' 退出")
+            print("  - 输入 'screenshot' 截图")
+            print("  - 输入 'save' 保存登录状态")
+            print("=" * 50)
+            
+            # 开始交互循环
+            while True:
+                try:
+                    # 获取用户输入
+                    user_input = input("\n👤 请输入提示词: ").strip()
+                    
+                    if not user_input:
+                        continue
+                    
+                    # 检查退出命令
+                    if user_input.lower() in ['quit', 'exit', '退出']:
+                        print("💾 正在保存登录状态...")
+                        await self.save_cookies()
+                        print("👋 再见！")
+                        break
+                    
+                    # 检查截图命令
+                    if user_input.lower() == 'screenshot':
+                        screenshot_path = await self.instance.screenshot()
+                        print(f"📸 截图已保存: {screenshot_path}")
+                        continue
+                    
+                    # 检查保存登录状态命令
+                    if user_input.lower() in ['save', '保存']:
+                        await self.save_cookies()
+                        print("💾 登录状态已保存")
+                        continue
+                    
+                    # 发送消息
+                    if await self.send_message(user_input):
+                        print("✅ 消息已发送，等待响应...")
+                        
+                        # 等待响应（最多5分钟）
+                        for i in range(300):
+                            if not self.waiting_for_response:
+                                break
+                            await asyncio.sleep(1)
+                        
+                        if self.api_responses:
+                            print(f"📹 收到 {len(self.api_responses)} 个响应")
+                            for i, resp in enumerate(self.api_responses, 1):
+                                print(f"  响应 {i}: {resp.get('url', 'N/A')}")
+                        else:
+                            print("⚠️  未收到响应")
+                    else:
+                        print("❌ 发送消息失败")
+                    
+                except KeyboardInterrupt:
+                    print("\n\n👋 会话被中断")
+                    break
+                except Exception as e:
+                    logger.error(f"交互循环出错: {e}")
+                    print(f"❌ 出错: {e}")
+            
+        except Exception as e:
+            logger.error(f"交互会话失败: {e}")
+        finally:
+            await self.cleanup()
+
+
+if __name__ == "__main__":
+    client = GrokVideoInteractiveClient()
+    asyncio.run(client.run_interactive_session())
+

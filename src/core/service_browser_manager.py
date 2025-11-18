@@ -358,6 +358,44 @@ class DoubaoBrowserManager(ServiceBrowserManager):
             return False
 
 
+class GrokBrowserManager(ServiceBrowserManager):
+    """Grok浏览器管理器"""
+    
+    def __init__(self):
+        from .interactive_grok_image import GrokImageInteractiveClient
+        super().__init__("Grok", GrokImageInteractiveClient)
+    
+    async def _initialize_client(self, client) -> bool:
+        """初始化Grok客户端"""
+        try:
+            # 初始化
+            logger.info("开始初始化Grok客户端...")
+            if not await client.setup():
+                logger.error("Grok客户端setup失败")
+                return False
+            
+            # 导航到Grok
+            logger.info("导航到Grok页面...")
+            if not await client.navigate_to_grok():
+                logger.error("导航到Grok失败")
+                return False
+            
+            logger.success("Grok页面导航成功")
+            
+            # 确保图像技能就绪
+            logger.info("设置Grok图像技能...")
+            if not await client.ensure_image_skill_ready():
+                logger.warning("图像技能设置失败，但实例已启动")
+            else:
+                logger.success("Grok图像技能设置成功")
+            
+            return True
+        except Exception as e:
+            logger.error(f"初始化Grok客户端失败: {e}")
+            return False
+
+
 # 创建服务专用的管理器实例
 ai_studio_browser_manager = AIStudioBrowserManager()
 doubao_browser_manager = DoubaoBrowserManager()
+grok_browser_manager = GrokBrowserManager()
