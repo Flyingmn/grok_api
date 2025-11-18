@@ -211,6 +211,55 @@ class GrokVideoInteractiveClient:
             logger.error(f"确保视频生成功能就绪失败: {e}")
             return False
     
+    async def upload_reference_image(self, image_path: str) -> bool:
+        """上传参考图片"""
+        try:
+            logger.info(f"开始上传参考图片: {image_path}")
+            
+            # 检查图片文件是否存在
+            image_file = Path(image_path)
+            if not image_file.exists():
+                logger.error(f"未找到图片文件: {image_path}")
+                return False
+            
+            # 确保视频生成功能已准备就绪
+            if not await self.ensure_video_skill_ready():
+                logger.warning("视频生成功能未就绪，但继续尝试上传")
+            
+            # 等待一下让界面稳定
+            await asyncio.sleep(1)
+            
+            # 方法1：直接查找页面中的文件输入元素
+            try:
+                file_input = await self.instance.page.query_selector(self.selectors["file_input"])
+                if file_input:
+                    logger.info("找到文件输入元素，开始上传...")
+                    await file_input.set_input_files(str(image_file.resolve()))
+                    await asyncio.sleep(2)
+                    logger.success("参考图片上传成功")
+                    return True
+            except Exception as direct_e:
+                logger.warning(f"直接方法失败: {direct_e}")
+            
+            # 方法2：尝试查找所有文件输入元素
+            try:
+                file_inputs = await self.instance.page.query_selector_all('input[type="file"]')
+                if file_inputs:
+                    logger.info(f"找到 {len(file_inputs)} 个文件输入元素，使用第一个")
+                    await file_inputs[0].set_input_files(str(image_file.resolve()))
+                    await asyncio.sleep(2)
+                    logger.success("参考图片上传成功（备用方法）")
+                    return True
+            except Exception as backup_e:
+                logger.warning(f"备用方法失败: {backup_e}")
+            
+            logger.warning("未能找到文件输入元素，图片上传可能失败")
+            return False
+            
+        except Exception as e:
+            logger.error(f"上传参考图片失败: {e}")
+            return False
+    
     async def send_message(self, message: str):
         """发送消息"""
         try:
@@ -272,27 +321,74 @@ class GrokVideoInteractiveClient:
             return False
     
     async def setup_network_listener(self):
-        """设置网络监听器，监听API响应"""
+        """设置网络监听器，监听API请求和响应（模仿doubao方案）"""
         try:
-            logger.info("设置网络监听器...")
+            logger.info("设置Grok视频生成网络监听器...")
             
+            # 监听网络响应 - 监听Grok视频生成API
             async def handle_response(response):
                 """处理网络响应"""
                 try:
                     url = response.url
                     
                     # 监听Grok的API响应
-                    if "grok.com" in url and ("api" in url.lower() or "generate" in url.lower() or "video" in url.lower()):
+                    if "grok.com" in url and ("api" in url.lower() or "generate" in url.lower() or "video" in url.lower() or "chat" in url.lower()):
                         logger.info(f"检测到Grok API响应: {url}")
                         await self.handle_api_response(response)
                         
                 except Exception as e:
                     logger.debug(f"处理响应时出错: {e}")
             
-            # 监听所有响应
-            self.instance.page.on("response", handle_response)
+            # 监听网络请求 - 监听Grok视频生成API请求
+            async def handle_request(request):
+                """处理网络请求"""
+                try:
+                    url = request.url
+                    
+                    # 监听Grok视频生成API请求
+                    if "grok.com" in url and ("api" in url.lower() or "generate" in url.lower() or "video" in url.lower() or "chat" in url.lower()):
+                        logger.info(f"检测到Grok API请求: {url}")
+                        try:
+                            # 获取请求数据
+                            post_data = request.post_data
+                            if post_data:
+                                logger.info("Grok视频生成请求数据已发送")
+                                self.waiting_for_response = True
+                                
+                                # 解析请求数据以获取提示词
+                                try:
+                                    request_data = json.loads(post_data)
+                                    # 尝试提取提示词
+                                    if isinstance(request_data, dict):
+                                        # 查找常见的提示词字段
+                                        prompt_fields = ["prompt", "message", "text", "content", "input"]
+                                        for field in prompt_fields:
+                                            if field in request_data:
+                                                prompt = request_data[field]
+                                                if isinstance(prompt, str) and prompt.strip():
+                                                    logger.info(f"📝 发送的提示词: {prompt[:100]}...")
+                                                    break
+                                        # 如果是消息数组结构
+                                        if "messages" in request_data and isinstance(request_data["messages"], list):
+                                            for msg in request_data["messages"]:
+                                                if isinstance(msg, dict) and "content" in msg:
+                                                    content = msg["content"]
+                                                    if isinstance(content, str):
+                                                        logger.info(f"📝 发送的提示词: {content[:100]}...")
+                                                        break
+                                except Exception as parse_e:
+                                    logger.debug(f"解析请求数据失败: {parse_e}")
+                        except Exception as e:
+                            logger.debug(f"处理Grok API请求时出错: {e}")
+                            
+                except Exception as e:
+                    logger.debug(f"处理请求时出错: {e}")
             
-            logger.success("网络监听器设置完成")
+            # 绑定事件监听器
+            self.instance.page.on("response", handle_response)
+            self.instance.page.on("request", handle_request)
+            
+            logger.success("Grok视频生成网络监听器设置完成")
             
         except Exception as e:
             logger.error(f"设置网络监听器失败: {e}")
@@ -328,10 +424,18 @@ class GrokVideoInteractiveClient:
             except Exception as json_error:
                 # 如果不是JSON，可能是SSE流
                 try:
-                    text = await response.text()
-                    if "text/event-stream" in response.headers.get("content-type", ""):
-                        logger.info("检测到SSE流响应")
-                        await self.handle_sse_stream(response, text)
+                    content_type = response.headers.get("content-type", "")
+                    if "text/event-stream" in content_type or "text/plain" in content_type:
+                        logger.info("检测到SSE流响应，开始实时解析...")
+                        await self.handle_sse_stream(response)
+                    else:
+                        # 尝试读取文本
+                        text = await response.text()
+                        if text:
+                            logger.info("收到文本响应，尝试解析...")
+                            # 检查是否是SSE格式
+                            if "data: " in text:
+                                await self.handle_sse_stream(response, text)
                 except Exception as text_error:
                     logger.debug(f"解析响应失败: {json_error}, {text_error}")
                     
@@ -374,21 +478,51 @@ class GrokVideoInteractiveClient:
             logger.debug(f"提取视频信息失败: {e}")
             return False
     
-    async def handle_sse_stream(self, response, text: str):
-        """处理SSE流响应"""
+    async def handle_sse_stream(self, response, text: str = None):
+        """处理SSE流响应 - 读取完整响应数据（模仿doubao方案）"""
         try:
-            logger.info("处理SSE流响应...")
+            logger.info("开始处理Grok视频生成SSE流...")
+            
+            found_videos = []
+            video_urls = []
+            collected_text = []  # 收集文本内容
+            
+            # 如果没有提供text，从response读取
+            if text is None:
+                try:
+                    response_text = await response.text()
+                except Exception as e:
+                    logger.warning(f"无法读取响应文本: {e}")
+                    response_text = ""
+            else:
+                response_text = text
+            
+            logger.info(f"收到SSE响应，长度: {len(response_text)}")
             
             # 按照SSE格式解析事件
-            events = text.split('\n\n')
+            events = response_text.split('\n\n')
+            logger.info(f"拆分出 {len(events)} 个事件")
             
-            for event in events:
+            for i, event in enumerate(events):
                 if not event.strip():
                     continue
                 
+                # 检查是否是错误事件
+                if 'event: error' in event or 'event: gateway-error' in event:
+                    error_match = event.split('data: ')
+                    if len(error_match) > 1:
+                        try:
+                            error_data = json.loads(error_match[1].split('\n')[0])
+                            logger.error(f"服务器错误: {error_data}")
+                            print(f"\n❌ 服务器返回错误: {error_data.get('message', '未知错误')}")
+                            return
+                        except:
+                            print(f"\n❌ 服务器返回错误")
+                            return
+                
+                # 查找data行
                 lines = event.strip().split('\n')
                 data_line = None
-                
                 for line in lines:
                     if line.startswith('data: '):
                         data_line = line[6:]  # 去掉"data: "前缀
@@ -398,19 +532,172 @@ class GrokVideoInteractiveClient:
                     continue
                 
                 try:
+                    # 解析事件数据
                     event_data = json.loads(data_line)
                     
-                    # 检查是否包含视频信息
+                    # 提取文本内容
+                    text_content = self._extract_text_from_event(event_data)
+                    if text_content:
+                        collected_text.append(text_content)
+                        logger.debug(f"提取到文本: {text_content[:50]}...")
+                    
+                    # 提取视频信息
+                    video_info = self._extract_video_from_event(event_data)
+                    if video_info:
+                        if isinstance(video_info, str):
+                            if video_info.startswith("http://") or video_info.startswith("https://"):
+                                if video_info not in video_urls:
+                                    video_urls.append(video_info)
+                                    logger.success(f"✅ 找到视频URL: {video_info}")
+                            else:
+                                # 可能是base64编码的视频
+                                found_videos.append(video_info)
+                                logger.success("✅ 找到base64视频数据")
+                        elif isinstance(video_info, list):
+                            for v in video_info:
+                                if isinstance(v, str):
+                                    if v.startswith("http://") or v.startswith("https://"):
+                                        if v not in video_urls:
+                                            video_urls.append(v)
+                                            logger.success(f"✅ 找到视频URL: {v}")
+                                    else:
+                                        found_videos.append(v)
+                    
+                    # 检查是否包含视频信息（完成标志）
                     if self._extract_video_info(event_data):
-                        self.waiting_for_response = False
-                        logger.success("从SSE流中检测到视频生成完成")
-                        break
+                        logger.info("检测到视频生成完成标志")
+                        # 不立即break，继续处理其他事件以获取完整信息
                         
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    logger.debug(f"解析事件失败: {e}")
                     continue
+            
+            # 显示收集到的文本内容
+            if collected_text:
+                full_text = "".join(collected_text)
+                logger.info(f"🤖 Grok回复: {full_text[:100]}...")
+            
+            # 显示找到的视频
+            if video_urls or found_videos:
+                logger.success(f"📹 Grok生成了 {len(video_urls)} 个视频URL, {len(found_videos)} 个base64视频")
+                
+                # 保存视频信息到响应
+                self.api_responses.append({
+                    "url": response.url,
+                    "status": response.status,
+                    "video_urls": video_urls,
+                    "videos": found_videos,
+                    "text": "".join(collected_text) if collected_text else "",
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+                
+                self.waiting_for_response = False
+                logger.success("视频生成完成")
+            elif collected_text:
+                # 只有文本，没有视频
+                self.api_responses.append({
+                    "url": response.url,
+                    "status": response.status,
+                    "text": "".join(collected_text),
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+                logger.warning("收到文本回复，但没有视频")
+            else:
+                logger.warning("未从SSE流中提取到内容")
                     
         except Exception as e:
             logger.error(f"处理SSE流失败: {e}")
+            print(f"\n❌ 处理Grok SSE流失败: {e}")
+    
+    def _extract_text_from_event(self, event_data: Dict[str, Any]) -> Optional[str]:
+        """从事件数据中提取文本内容"""
+        try:
+            if isinstance(event_data, dict):
+                # 查找常见的文本字段
+                text_fields = ["text", "content", "message", "reply", "answer", "output"]
+                for field in text_fields:
+                    if field in event_data:
+                        value = event_data[field]
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+                        elif isinstance(value, dict):
+                            # 递归查找
+                            text = self._extract_text_from_event(value)
+                            if text:
+                                return text
+                
+                # 查找嵌套结构
+                if "data" in event_data:
+                    text = self._extract_text_from_event(event_data["data"])
+                    if text:
+                        return text
+                
+                # 查找消息数组
+                if "messages" in event_data and isinstance(event_data["messages"], list):
+                    texts = []
+                    for msg in event_data["messages"]:
+                        if isinstance(msg, dict):
+                            text = self._extract_text_from_event(msg)
+                            if text:
+                                texts.append(text)
+                    if texts:
+                        return "".join(texts)
+            
+            elif isinstance(event_data, list):
+                texts = []
+                for item in event_data:
+                    text = self._extract_text_from_event(item)
+                    if text:
+                        texts.append(text)
+                if texts:
+                    return "".join(texts)
+            
+            return None
+        except Exception as e:
+            logger.debug(f"提取文本失败: {e}")
+            return None
+    
+    def _extract_video_from_event(self, event_data: Dict[str, Any]) -> Optional[Any]:
+        """从事件数据中提取视频信息"""
+        try:
+            if isinstance(event_data, dict):
+                # 查找常见的视频字段
+                video_fields = ["video", "video_url", "videoUrl", "url", "output", "result", "video_urls", "videos"]
+                for field in video_fields:
+                    if field in event_data:
+                        value = event_data[field]
+                        if isinstance(value, str):
+                            if "http" in value or ".mp4" in value or ".webm" in value or ".mov" in value:
+                                return value
+                        elif isinstance(value, list):
+                            videos = []
+                            for v in value:
+                                if isinstance(v, str) and ("http" in v or ".mp4" in v or ".webm" in v or ".mov" in v):
+                                    videos.append(v)
+                            if videos:
+                                return videos
+                        elif isinstance(value, dict):
+                            # 递归查找
+                            video = self._extract_video_from_event(value)
+                            if video:
+                                return video
+                
+                # 查找嵌套结构
+                if "data" in event_data:
+                    video = self._extract_video_from_event(event_data["data"])
+                    if video:
+                        return video
+            
+            elif isinstance(event_data, list):
+                for item in event_data:
+                    video = self._extract_video_from_event(item)
+                    if video:
+                        return video
+            
+            return None
+        except Exception as e:
+            logger.debug(f"提取视频失败: {e}")
+            return None
     
     async def cleanup(self):
         """清理资源"""

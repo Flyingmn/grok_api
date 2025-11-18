@@ -46,7 +46,7 @@ class BaseMultiInstanceServer:
     def start_api_server(self):
         """启动API服务器"""
         try:
-            logger.info(f"启动{self.service_name}图片生成API服务器 (端口: {self.api_port})...")
+            logger.info(f"启动{self.service_name}API服务器 (端口: {self.api_port})...")
             uvicorn.run(
                 self.api_app,
                 host="0.0.0.0",
@@ -61,7 +61,7 @@ class BaseMultiInstanceServer:
         logger.info(f"🚀 启动{self.service_name}多实例服务")
         logger.info("=" * 60)
         logger.info("📋 服务说明:")
-        logger.info(f"  • 图片生成API: http://localhost:{self.api_port}")
+        logger.info(f"  • API服务: http://localhost:{self.api_port}")
         logger.info(f"  • 浏览器管理界面: http://localhost:{self.management_port}")
         logger.info(f"  • 健康检查: http://localhost:{self.api_port}/health")
         logger.info("=" * 60)

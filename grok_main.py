@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Grok多实例服务主启动脚本
-同时启动Grok图片生成API和浏览器管理界面
+同时启动Grok视频生成API和浏览器管理界面
 """
 
 import sys
