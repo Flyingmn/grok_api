@@ -50,177 +50,23 @@ class GrokVideoInteractiveClient:
         }
     
     async def setup(self):
-        """初始化设置（带反检测配置）"""
+        """初始化设置"""
         try:
-            logger.info("初始化Grok视频生成交互客户端（反检测模式）...")
+            logger.info("初始化Grok视频生成交互客户端...")
             
             # 创建配置
             config = CrawlerConfig()
-            config.headless = False  # 显示浏览器窗口（有头模式更不容易被检测）
+            config.headless = False  # 显示浏览器窗口
             config.timeout = 30000
             
-            # 设置更真实的视窗大小（模拟真实用户）
+            # 设置视窗大小
             config.set_desktop_viewport()  # 1280x720
             
             # 创建实例
             self.instance = self.framework.create_instance(self.instance_id, config)
             await self.instance.start()
             
-            # 反检测措施：添加全面的浏览器指纹伪装
-            try:
-                # 注入全面的反检测脚本
-                await self.instance.page.add_init_script("""
-                    // ========== WebDriver 特征隐藏 ==========
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                    
-                    // 删除 webdriver 属性
-                    delete navigator.__proto__.webdriver;
-                    
-                    // ========== Firefox 特征（移除 Chrome 特有特征）==========
-                    // Firefox 没有 window.chrome 对象，所以不添加
-                    // 如果存在则删除（可能是其他脚本添加的）
-                    if (window.chrome) {
-                        delete window.chrome;
-                    }
-                    
-                    // ========== Permissions API ==========
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' ?
-                            Promise.resolve({ state: Notification.permission }) :
-                            originalQuery(parameters)
-                    );
-                    
-                    // ========== Plugins 伪装（Firefox 版本）==========
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => {
-                            // Firefox 常见的插件
-                            return [
-                                {
-                                    0: {type: "application/pdf", suffixes: "pdf", description: "Portable Document Format"},
-                                    description: "Portable Document Format",
-                                    filename: "internal-pdf-viewer",
-                                    length: 1,
-                                    name: "PDF Viewer"
-                                },
-                                {
-                                    0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
-                                    description: "Portable Document Format",
-                                    filename: "internal-pdf-viewer",
-                                    length: 1,
-                                    name: "Chrome PDF Plugin"
-                                }
-                            ];
-                        }
-                    });
-                    
-                    // ========== Languages ==========
-                    // 匹配真实 Firefox 的语言设置（中文优先）
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['zh-CN', 'zh', 'zh-TW', 'zh-HK', 'en-US', 'en']
-                    });
-                    
-                    // ========== Platform ==========
-                    Object.defineProperty(navigator, 'platform', {
-                        get: () => 'Win32'
-                    });
-                    
-                    // ========== Hardware Concurrency ==========
-                    Object.defineProperty(navigator, 'hardwareConcurrency', {
-                        get: () => 8
-                    });
-                    
-                    // ========== Device Memory ==========
-                    Object.defineProperty(navigator, 'deviceMemory', {
-                        get: () => 8
-                    });
-                    
-                    // ========== Canvas 指纹伪装 ==========
-                    const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                    HTMLCanvasElement.prototype.toDataURL = function(type) {
-                        if (type === 'image/png' || type === undefined) {
-                            const context = this.getContext('2d');
-                            if (context) {
-                                const imageData = context.getImageData(0, 0, this.width, this.height);
-                                for (let i = 0; i < imageData.data.length; i += 4) {
-                                    imageData.data[i] = imageData.data[i] ^ 1;
-                                }
-                                context.putImageData(imageData, 0, 0);
-                            }
-                        }
-                        return originalToDataURL.apply(this, arguments);
-                    };
-                    
-                    // ========== WebGL 指纹伪装（Firefox 版本）==========
-                    const getParameter = WebGLRenderingContext.prototype.getParameter;
-                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                        // WebGL 常量：UNMASKED_VENDOR_WEBGL = 0x9245 (37445)
-                        // WebGL 常量：UNMASKED_RENDERER_WEBGL = 0x9246 (37446)
-                        if (parameter === 37445) {
-                            // Firefox 常见的 GPU 厂商
-                            return 'Intel Inc.';
-                        }
-                        if (parameter === 37446) {
-                            // Firefox 常见的 GPU 渲染器
-                            return 'Intel Iris OpenGL Engine';
-                        }
-                        return getParameter.apply(this, arguments);
-                    };
-                    
-                    // ========== AudioContext 指纹伪装 ==========
-                    if (window.AudioContext) {
-                        const originalCreateOscillator = AudioContext.prototype.createOscillator;
-                        AudioContext.prototype.createOscillator = function() {
-                            const oscillator = originalCreateOscillator.apply(this, arguments);
-                            const originalStart = oscillator.start;
-                            oscillator.start = function() {
-                                return originalStart.apply(this, arguments);
-                            };
-                            return oscillator;
-                        };
-                    }
-                    
-                    // ========== 字体检测伪装 ==========
-                    Object.defineProperty(document, 'fonts', {
-                        get: () => ({
-                            check: () => true,
-                            load: () => Promise.resolve([]),
-                            ready: Promise.resolve()
-                        })
-                    });
-                    
-                    // ========== Battery API ==========
-                    if (navigator.getBattery) {
-                        navigator.getBattery = () => Promise.resolve({
-                            charging: true,
-                            chargingTime: 0,
-                            dischargingTime: Infinity,
-                            level: 1
-                        });
-                    }
-                    
-                    // ========== Connection API ==========
-                    Object.defineProperty(navigator, 'connection', {
-                        get: () => ({
-                            effectiveType: '4g',
-                            rtt: 50,
-                            downlink: 10,
-                            saveData: false
-                        })
-                    });
-                    
-                    // ========== 时间戳一致性 ==========
-                    const originalDate = Date;
-                    Date.now = () => originalDate.now();
-                    Date.prototype.getTime = function() {
-                        return originalDate.prototype.getTime.apply(this, arguments);
-                    };
-                """)
-                logger.info("✅ 全面反检测脚本已注入")
-            except Exception as e:
-                logger.warning(f"注入反检测脚本失败: {e}")
+            # 依赖 Camoufox 的内置反检测能力，不添加额外伪装
             
             # 设置网络监听
             await self.setup_network_listener()

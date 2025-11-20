@@ -97,45 +97,18 @@ class CrawlerInstance:
                 # ]
             )
             
-            # 创建浏览器上下文（带完整的反检测请求头 - Firefox 版本）
-            # 注意：Camoufox 基于 Firefox，所以使用 Firefox 的请求头
-            # 基于2025年11月真实Firefox 145.0的请求头
+            # 创建浏览器上下文（使用 Camoufox 默认设置，不添加额外伪装）
             context_options = {
                 "ignore_https_errors": True,
-                "locale": "zh-CN",  # 设置语言为中文（匹配真实请求头）
-                # "timezone_id": "Asia/Shanghai",  # 设置时区（可选）
-                "extra_http_headers": {
-                    # HTML页面请求的Accept头
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
-                    # 中文优先的语言设置（匹配真实Firefox）
-                    "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
-                    # 包含zstd压缩格式（2025年Firefox支持）
-                    "Accept-Encoding": "gzip, deflate, br, zstd",
-                    "Cache-Control": "max-age=0",
-                    "Connection": "keep-alive",
-                    # Firefox 不使用 Sec-CH-UA 头部（这是 Chrome 特有的）
-                    # 但保留 Sec-Fetch-* 头部（Firefox 也支持）
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
-                    "Upgrade-Insecure-Requests": "1",
-                    "DNT": "1",  # Firefox 默认启用 Do Not Track
-                    # Priority头部（Firefox 145.0支持）
-                    "Priority": "u=1, i",
-                }
             }
             
             if self.config.user_agent:
                 context_options["user_agent"] = self.config.user_agent
-            else:
-                # 使用真实的 Firefox User-Agent（匹配2025年11月最新版本）
-                # Firefox 145.0 (2025年11月版本)
-                context_options["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0"
                 
             if self.config.proxy:
                 context_options["proxy"] = {"server": self.config.proxy}
-                
+            
+            # 使用 Camoufox 默认的请求头和指纹（不添加额外伪装）
             self.context = await self.browser.new_context(**context_options)
             
             # 设置默认超时
