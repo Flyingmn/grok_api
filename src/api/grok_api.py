@@ -26,49 +26,94 @@ class GrokVideoGenerator(BaseVideoGenerator):
         super().__init__("grok", grok_browser_manager)
     
     async def _generate_video_impl(self, client, prompt: str, reference_images_b64: Optional[List[str]], task_id: str) -> Dict[str, Any]:
-        """Grok具体的视频生成实现"""
+        """Grok具体的视频生成实现（使用新工作流：在 grok 页面不填入提示词，上传图片后，在 video 页面填入提示词并提交）"""
         try:
-            # 检查是否需要导航到Grok页面
-            current_url = client.instance.page.url if client.instance and client.instance.page else ""
-            logger.info(f"当前页面URL: {current_url}")
+            import base64
+            from pathlib import Path
             
-            if "https://grok.com" not in current_url:
-                logger.info("当前不在Grok聊天页面，开始导航...")
-                if not await client.navigate_to_grok():
-                    logger.warning("导航到Grok页面失败，但继续执行")
-            else:
-                logger.info("已在Grok聊天页面，跳过导航")
-            
-            # 确保视频生成功能就绪
-            if not await client.ensure_video_skill_ready():
-                logger.warning("视频生成功能准备失败，但继续执行")
-            
-            # 处理参考图片上传（支持单个或多个）
-            images_to_upload = []
-            if reference_images_b64:
-                images_to_upload.extend(reference_images_b64)
-            
-            if images_to_upload:
-                logger.info(f"检测到 {len(images_to_upload)} 张参考图片，开始上传...")
-                if not await self._upload_reference_images(images_to_upload, client, task_id):
-                    return {
-                        "success": False,
-                        "message": "参考图片上传失败"
-                    }
-            
-            # 发送提示词
-            logger.info("发送提示词到Grok...")
-            if not await client.send_message(prompt):
+            # 检查是否有参考图片
+            if not reference_images_b64 or len(reference_images_b64) == 0:
                 return {
                     "success": False,
-                    "message": "发送提示词失败"
+                    "message": "Grok视频生成需要至少一张参考图片"
                 }
             
-            # 等待并解析响应 - Grok视频生成专用处理
-            logger.info("等待Grok AI视频生成响应...")
-            result = await self._wait_for_grok_response(client, timeout=600)  # 视频生成可能需要更长时间
+            # 如果有多张图片，只使用第一张（Grok视频生成可能只支持单张参考图片）
+            if len(reference_images_b64) > 1:
+                logger.warning(f"检测到 {len(reference_images_b64)} 张参考图片，Grok视频生成只支持单张图片，将使用第一张")
             
-            return result
+            # 将第一张 base64 图片保存为临时文件
+            image_b64 = reference_images_b64[0]
+            task_unique_id = task_id[:8]
+            temp_image_path = Path(f"temp_reference_{task_unique_id}_0.png")
+            
+            try:
+                # 解码base64图片
+                if image_b64.startswith('data:image'):
+                    # 移除data:image/png;base64,前缀
+                    image_b64 = image_b64.split(',')[1]
+                
+                image_data = base64.b64decode(image_b64)
+                
+                # 保存临时文件
+                with open(temp_image_path, 'wb') as f:
+                    f.write(image_data)
+                
+                logger.info(f"临时图片文件已保存: {temp_image_path}")
+                
+                # 使用新的工作流：generate_video_with_image
+                # 这个方法会在 grok 页面上传图片，然后在 video 页面填入提示词并提交
+                logger.info("使用新的工作流生成视频...")
+                result = await client.generate_video_with_image(prompt, str(temp_image_path))
+                
+                if not result:
+                    return {
+                        "success": False,
+                        "message": "视频生成失败或超时"
+                    }
+                
+                # 解析结果
+                if result.get("status") == "completed":
+                    video_url = result.get("video_url")
+                    video_urls = result.get("video_urls", [])
+                    
+                    # 构建返回结果
+                    response = {
+                        "success": True,
+                        "message": "Grok视频生成成功",
+                        "video_urls": [],
+                        "generated_videos": [],
+                        "ai_text_response": ""
+                    }
+                    
+                    if video_url:
+                        response["video_urls"].append(video_url)
+                    if video_urls:
+                        response["video_urls"].extend(video_urls)
+                    
+                    # 去重
+                    response["video_urls"] = list(dict.fromkeys(response["video_urls"]))
+                    
+                    return response
+                elif result.get("status") == "error":
+                    return {
+                        "success": False,
+                        "message": f"视频生成失败: {result.get('error', '未知错误')}"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": "视频生成状态未知"
+                    }
+                    
+            finally:
+                # 清理临时文件
+                try:
+                    if temp_image_path.exists():
+                        temp_image_path.unlink()
+                        logger.debug(f"临时文件已删除: {temp_image_path}")
+                except Exception as e:
+                    logger.warning(f"删除临时文件失败: {e}")
             
         except Exception as e:
             logger.error(f"Grok生成视频时出错: {e}")
@@ -87,7 +132,7 @@ class GrokVideoGenerator(BaseVideoGenerator):
             logger.warning(f"Grok任务清理失败: {e}")
     
     async def _upload_single_image(self, client, image_path: str) -> bool:
-        """上传单个图片到Grok"""
+        """上传单个图片到Grok（保留此方法以备后用）"""
         try:
             return await client.upload_reference_image(image_path)
         except Exception as e:
@@ -95,6 +140,7 @@ class GrokVideoGenerator(BaseVideoGenerator):
             return False
     
     async def _wait_for_grok_response(self, client, timeout: int = 600) -> Dict[str, Any]:
+        """等待Grok AI视频生成响应并解析结果（保留此方法以备后用，新工作流使用 generate_video_with_image）"""
         """等待Grok AI视频生成响应并解析结果（视频生成需要更长时间）"""
         try:
             # 等待响应（默认最多10分钟，视频生成通常比图片生成需要更长时间）

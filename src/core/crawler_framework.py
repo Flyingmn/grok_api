@@ -79,7 +79,7 @@ class CrawlerInstance:
             logger.info(f"启动爬虫实例 {self.instance_id}")
             
             #设置HOME=/root
-            os.environ["HOME"] = "/root"
+            # os.environ["HOME"] = "/root"
             
             # 启动Playwright
             self.playwright = await async_playwright().start()

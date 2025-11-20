@@ -215,8 +215,90 @@ class GrokVideoInteractiveClient:
             logger.error(f"确保视频生成功能就绪失败: {e}")
             return False
     
+    async def fill_prompt_without_sending(self, prompt: str) -> bool:
+        """填入提示词但不发送（已废弃：新工作流不在 grok 页面填入提示词，改为在 video 页面填入）
+        
+        注意：此方法已不再使用，保留仅为了向后兼容。
+        新工作流：在 grok 页面上传图片 → 跳转到 video.html → 在 video 页面填入提示词并提交
+        """
+        try:
+            logger.info(f"正在填入提示词（不发送）: {prompt}")
+            
+            # 确保在 grok.html 页面
+            current_url = self.instance.page.url
+            if "grok.com/imagine" not in current_url:
+                logger.warning("不在 grok 页面，尝试导航...")
+                if not await self.navigate_to_grok():
+                    return False
+            
+            # 等待页面稳定
+            await asyncio.sleep(1)
+            
+            # 查找输入框 - 尝试多种选择器
+            text_input = None
+            
+            # 方法1: contenteditable div
+            try:
+                text_input = await self.instance.page.query_selector('div[contenteditable="true"]')
+                if text_input and await text_input.is_visible():
+                    logger.info("找到 contenteditable 输入框")
+            except:
+                pass
+            
+            # 方法2: textarea
+            if not text_input:
+                try:
+                    text_input = await self.instance.page.query_selector('textarea[aria-label*="video" i], textarea[aria-label*="Make a video" i]')
+                    if text_input and await text_input.is_visible():
+                        logger.info("找到 textarea 输入框")
+                except:
+                    pass
+            
+            # 方法3: 通用 textarea
+            if not text_input:
+                try:
+                    textareas = await self.instance.page.query_selector_all('textarea')
+                    for ta in textareas:
+                        if await ta.is_visible():
+                            text_input = ta
+                            logger.info("找到通用 textarea 输入框")
+                            break
+                except:
+                    pass
+            
+            if text_input and await text_input.is_visible():
+                # 点击输入框获得焦点
+                await text_input.click()
+                await asyncio.sleep(0.5)
+                
+                # 清空输入框
+                if text_input.tag_name.lower() == 'textarea':
+                    await text_input.fill("")
+                else:
+                    # contenteditable div
+                    await text_input.evaluate("element => element.textContent = ''")
+                await asyncio.sleep(0.3)
+                
+                # 输入提示词
+                if text_input.tag_name.lower() == 'textarea':
+                    await text_input.fill(prompt)
+                else:
+                    # contenteditable div - 使用 type 方法更可靠
+                    await text_input.type(prompt, delay=50)
+                
+                await asyncio.sleep(1)
+                logger.success(f"提示词已填入输入框（未发送）")
+                return True
+            else:
+                logger.error("未找到输入框")
+                return False
+                
+        except Exception as e:
+            logger.error(f"填入提示词失败: {e}")
+            return False
+    
     async def upload_reference_image(self, image_path: str) -> bool:
-        """上传参考图片"""
+        """上传参考图片（在 grok.html 页面，上传后会跳转到 video.html）"""
         try:
             logger.info(f"开始上传参考图片: {image_path}")
             
@@ -226,43 +308,363 @@ class GrokVideoInteractiveClient:
                 logger.error(f"未找到图片文件: {image_path}")
                 return False
             
-            # 确保视频生成功能已准备就绪
-            if not await self.ensure_video_skill_ready():
-                logger.warning("视频生成功能未就绪，但继续尝试上传")
+            # 确保在 grok.html 页面
+            current_url = self.instance.page.url
+            if "grok.com/imagine" not in current_url:
+                logger.warning("不在 grok 页面，尝试导航...")
+                if not await self.navigate_to_grok():
+                    return False
             
             # 等待一下让界面稳定
             await asyncio.sleep(1)
             
-            # 方法1：直接查找页面中的文件输入元素
-            try:
-                file_input = await self.instance.page.query_selector(self.selectors["file_input"])
-                if file_input:
-                    logger.info("找到文件输入元素，开始上传...")
-                    await file_input.set_input_files(str(image_file.resolve()))
-                    await asyncio.sleep(2)
-                    logger.success("参考图片上传成功")
-                    return True
-            except Exception as direct_e:
-                logger.warning(f"直接方法失败: {direct_e}")
+            # 查找文件输入元素 - 尝试多种方法
+            file_input = None
             
-            # 方法2：尝试查找所有文件输入元素
+            # 方法1：查找隐藏的 file input
             try:
                 file_inputs = await self.instance.page.query_selector_all('input[type="file"]')
                 if file_inputs:
-                    logger.info(f"找到 {len(file_inputs)} 个文件输入元素，使用第一个")
-                    await file_inputs[0].set_input_files(str(image_file.resolve()))
-                    await asyncio.sleep(2)
-                    logger.success("参考图片上传成功（备用方法）")
-                    return True
-            except Exception as backup_e:
-                logger.warning(f"备用方法失败: {backup_e}")
+                    # 找到第一个可见或可用的 file input
+                    for fi in file_inputs:
+                        # file input 通常是隐藏的，但我们可以直接使用
+                        file_input = fi
+                        logger.info("找到文件输入元素")
+                        break
+            except Exception as e:
+                logger.warning(f"查找文件输入元素失败: {e}")
             
-            logger.warning("未能找到文件输入元素，图片上传可能失败")
-            return False
+            # 方法2：通过 SVG 图标找到上传按钮，然后找到对应的 file input
+            if not file_input:
+                try:
+                    # 查找上传相关的 SVG 或按钮
+                    upload_icon = await self.instance.page.query_selector('svg[class*="stroke-[2]"][class*="text-primary"]')
+                    if upload_icon:
+                        # 向上查找包含 file input 的父容器
+                        parent = await upload_icon.evaluate_handle("el => el.closest('div')")
+                        if parent:
+                            file_inputs = await parent.query_selector_all('input[type="file"]')
+                            if file_inputs:
+                                file_input = file_inputs[0]
+                                logger.info("通过上传图标找到文件输入元素")
+                except Exception as e:
+                    logger.warning(f"通过图标查找失败: {e}")
+            
+            if file_input:
+                try:
+                    logger.info("开始上传文件...")
+                    await file_input.set_input_files(str(image_file.resolve()))
+                    await asyncio.sleep(2)
+                    logger.success("参考图片上传成功，等待页面跳转...")
+                    
+                    # 等待页面跳转到 video.html（上传后会立即跳转）
+                    # 检测 URL 变化或页面元素变化
+                    max_wait = 10  # 最多等待10秒
+                    for i in range(max_wait):
+                        await asyncio.sleep(1)
+                        current_url = self.instance.page.url
+                        # 检查是否跳转到视频页面（URL 可能包含 video 或页面结构改变）
+                        if "video" in current_url.lower() or await self._check_video_page():
+                            logger.success("页面已跳转到视频生成页面")
+                            return True
+                    
+                    logger.warning("上传成功，但未检测到页面跳转（可能已跳转但URL未变）")
+                    return True
+                except Exception as e:
+                    logger.error(f"上传文件失败: {e}")
+                    return False
+            else:
+                logger.error("未能找到文件输入元素")
+                return False
             
         except Exception as e:
             logger.error(f"上传参考图片失败: {e}")
             return False
+    
+    async def _check_video_page(self) -> bool:
+        """检查是否在视频生成页面（video.html）"""
+        try:
+            # 检查页面中是否有视频相关的元素
+            # video.html 中可能有特定的 textarea 或元素
+            video_textarea = await self.instance.page.query_selector('textarea[aria-label*="Make a video" i]')
+            if video_textarea:
+                return True
+            
+            # 检查是否有视频生成相关的按钮或元素
+            video_elements = await self.instance.page.query_selector_all('[aria-label*="video" i], [aria-label*="Make video" i]')
+            if video_elements:
+                return True
+            
+            return False
+        except:
+            return False
+    
+    async def check_and_fill_prompt_in_video_page(self, prompt: str) -> bool:
+        """在 video.html 页面填入提示词并提交（无论是否已有提示词，都会覆盖并填入新的提示词）"""
+        try:
+            logger.info("在 video.html 页面填入提示词并提交...")
+            
+            # 等待页面稳定
+            await asyncio.sleep(2)
+            
+            # 查找 textarea 输入框
+            textarea = await self.instance.page.query_selector('textarea[aria-label*="Make a video" i]')
+            if not textarea:
+                # 尝试查找其他 textarea
+                textareas = await self.instance.page.query_selector_all('textarea')
+                for ta in textareas:
+                    if await ta.is_visible():
+                        textarea = ta
+                        break
+            
+            if not textarea:
+                logger.error("未找到 textarea 输入框")
+                return False
+            
+            # 检查 textarea 中是否已有提示词（仅用于日志记录）
+            try:
+                # 使用 evaluate 获取 textarea 的值
+                current_value = await textarea.evaluate("el => el.value || el.textContent || el.innerText || ''")
+                if current_value and current_value.strip():
+                    logger.info(f"检测到当前提示词: {current_value.strip()[:50]}...，将覆盖为新提示词")
+            except Exception as e:
+                logger.debug(f"获取 textarea 值失败: {e}")
+            
+            # 无论是否已有提示词，都填入新的提示词
+            logger.info("正在填入提示词...")
+            
+            # 点击输入框获得焦点
+            await textarea.click()
+            await asyncio.sleep(0.5)
+            
+            # 清空输入框
+            await textarea.fill("")
+            await asyncio.sleep(0.3)
+            
+            # 填入提示词
+            await textarea.fill(prompt)
+            await asyncio.sleep(1)
+            
+            logger.success(f"提示词已填入: {prompt[:50]}...")
+            
+            # 查找并点击提交按钮（无论提示词是否存在都需要点击提交）
+            submit_button = await self.instance.page.query_selector('button[aria-label*="Make video" i]')
+            if not submit_button:
+                # 尝试查找包含 "Make video" 文本的按钮
+                buttons = await self.instance.page.query_selector_all('button')
+                for btn in buttons:
+                    aria_label = await btn.get_attribute("aria-label")
+                    if aria_label and "Make video" in aria_label:
+                        submit_button = btn
+                        break
+                    # 检查按钮内的文本
+                    try:
+                        text = await btn.inner_text()
+                        if "Make video" in text or "Redo" in text:
+                            submit_button = btn
+                            break
+                    except:
+                        pass
+            
+            if submit_button:
+                # 检查按钮是否可用
+                is_disabled = await submit_button.get_attribute("disabled")
+                if is_disabled:
+                    logger.warning("提交按钮被禁用，可能正在处理中")
+                    return False
+                
+                logger.info("点击提交按钮生成视频...")
+                await submit_button.click()
+                await asyncio.sleep(2)
+                logger.success("已点击提交按钮，视频生成已启动")
+                return True
+            else:
+                logger.error("未找到提交按钮")
+                return False
+                
+        except Exception as e:
+            logger.error(f"检查并填入提示词失败: {e}")
+            return False
+    
+    async def wait_for_video_completion(self, timeout: int = 300) -> Optional[Dict[str, Any]]:
+        """等待视频生成完成（检测 video_done.html 页面或视频元素）"""
+        try:
+            logger.info("等待视频生成完成...")
+            
+            start_time = asyncio.get_event_loop().time()
+            
+            while True:
+                # 检查超时
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed > timeout:
+                    logger.warning(f"等待视频生成超时（{timeout}秒）")
+                    return None
+                
+                # 检查页面 URL
+                current_url = self.instance.page.url
+                
+                # 检查是否在视频完成页面（video_done.html）
+                # video_done.html 中有 video 标签，特别是 id="sd-video" 或 id="hd-video"
+                try:
+                    # 方法1: 检查特定的视频 ID（video_done.html 的特征）
+                    sd_video = await self.instance.page.query_selector('video[id="sd-video"]')
+                    hd_video = await self.instance.page.query_selector('video[id="hd-video"]')
+                    
+                    if sd_video or hd_video:
+                        # 优先使用 hd-video，如果没有则使用 sd-video
+                        target_video = hd_video if hd_video else sd_video
+                        src = await target_video.get_attribute("src")
+                        
+                        if src:
+                            logger.success("检测到视频元素（video_done.html），视频生成完成！")
+                            
+                            # 提取视频 URL
+                            video_url = src
+                            if not video_url.startswith("http"):
+                                # 可能是相对路径，需要转换为绝对路径
+                                if video_url.startswith("/"):
+                                    video_url = f"https://grok.com{video_url}"
+                                else:
+                                    video_url = f"{current_url.rsplit('/', 1)[0]}/{video_url}"
+                            
+                            return {
+                                "status": "completed",
+                                "video_url": video_url,
+                                "video_type": "hd" if hd_video else "sd"
+                            }
+                    
+                    # 方法2: 检查所有 video 标签
+                    video_elements = await self.instance.page.query_selector_all('video')
+                    if video_elements:
+                        for video in video_elements:
+                            src = await video.get_attribute("src")
+                            if src and (".mp4" in src.lower() or ".webm" in src.lower() or "video" in src.lower()):
+                                # 检查视频是否真的已加载（不是占位符）
+                                try:
+                                    ready_state = await video.evaluate("video => video.readyState")
+                                    if ready_state >= 2:  # HAVE_CURRENT_DATA 或更高
+                                        logger.success("检测到已加载的视频元素，视频生成完成！")
+                                        
+                                        # 提取视频 URL
+                                        video_url = src
+                                        if not video_url.startswith("http"):
+                                            if video_url.startswith("/"):
+                                                video_url = f"https://grok.com{video_url}"
+                                            else:
+                                                video_url = f"{current_url.rsplit('/', 1)[0]}/{video_url}"
+                                        
+                                        return {
+                                            "status": "completed",
+                                            "video_url": video_url,
+                                            "video_elements": len(video_elements)
+                                        }
+                                except:
+                                    # 如果无法检查 readyState，仍然返回视频 URL
+                                    video_url = src
+                                    if not video_url.startswith("http"):
+                                        if video_url.startswith("/"):
+                                            video_url = f"https://grok.com{video_url}"
+                                        else:
+                                            video_url = f"{current_url.rsplit('/', 1)[0]}/{video_url}"
+                                    
+                                    logger.success("检测到视频元素，视频生成完成！")
+                                    return {
+                                        "status": "completed",
+                                        "video_url": video_url,
+                                        "video_elements": len(video_elements)
+                                    }
+                except Exception as e:
+                    logger.debug(f"检查视频元素时出错: {e}")
+                
+                # 检查网络响应中是否有视频信息
+                if self.api_responses:
+                    for resp in self.api_responses:
+                        if resp.get("video_urls") or resp.get("videos"):
+                            logger.success("从网络响应中检测到视频，视频生成完成！")
+                            return {
+                                "status": "completed",
+                                "video_urls": resp.get("video_urls", []),
+                                "videos": resp.get("videos", []),
+                                "response": resp
+                            }
+                
+                # 检查是否有错误提示
+                try:
+                    error_elements = await self.instance.page.query_selector_all('[class*="error" i], [class*="Error" i]')
+                    if error_elements:
+                        for err in error_elements:
+                            if await err.is_visible():
+                                error_text = await err.inner_text()
+                                if error_text and len(error_text.strip()) > 0:
+                                    logger.error(f"检测到错误: {error_text}")
+                                    return {
+                                        "status": "error",
+                                        "error": error_text
+                                    }
+                except:
+                    pass
+                
+                # 等待一段时间后再次检查
+                await asyncio.sleep(2)
+                
+        except Exception as e:
+            logger.error(f"等待视频生成完成时出错: {e}")
+            return None
+    
+    async def generate_video_with_image(self, prompt: str, image_path: str) -> Optional[Dict[str, Any]]:
+        """按照正确的工作流生成视频：在 grok 页面不填入提示词，上传图片后，在 video 页面填入提示词并提交"""
+        try:
+            logger.info("开始视频生成工作流...")
+            logger.info(f"提示词: {prompt}")
+            logger.info(f"图片路径: {image_path}")
+            
+            # 步骤1: 导航到 grok 页面
+            if not await self.navigate_to_grok():
+                logger.error("导航到 grok 页面失败")
+                return None
+            
+            # 步骤2: 直接上传图片（不在 grok 页面填入提示词，上传后会跳转到 video.html）
+            logger.info("在 grok 页面直接上传图片（不填入提示词）...")
+            if not await self.upload_reference_image(image_path):
+                logger.error("上传图片失败")
+                return None
+            
+            # 步骤3: 等待页面跳转到 video.html
+            logger.info("等待页面跳转到视频生成页面...")
+            max_wait = 15
+            video_page_reached = False
+            for i in range(max_wait):
+                await asyncio.sleep(1)
+                if await self._check_video_page():
+                    logger.success("已进入视频生成页面")
+                    video_page_reached = True
+                    break
+            else:
+                logger.warning("未检测到页面跳转，但继续执行")
+            
+            # 步骤4: 在 video.html 页面填入提示词并提交
+            if video_page_reached:
+                logger.info("在视频生成页面填入提示词并提交...")
+                if not await self.check_and_fill_prompt_in_video_page(prompt):
+                    logger.warning("填入提示词并提交失败，但继续等待视频生成")
+            else:
+                logger.warning("未确认进入视频生成页面，尝试填入提示词...")
+                # 即使未检测到页面跳转，也尝试填入提示词
+                await self.check_and_fill_prompt_in_video_page(prompt)
+            
+            # 步骤5: 等待视频生成完成
+            result = await self.wait_for_video_completion(timeout=300)
+            
+            if result:
+                logger.success("视频生成完成！")
+                return result
+            else:
+                logger.warning("视频生成可能未完成或超时")
+                return None
+                
+        except Exception as e:
+            logger.error(f"生成视频失败: {e}")
+            return None
     
     async def send_message(self, message: str):
         """发送消息"""
@@ -741,58 +1143,110 @@ class GrokVideoInteractiveClient:
             print("🎬 Grok视频生成交互会话已启动")
             print("=" * 50)
             print("提示：")
-            print("  - 输入提示词生成视频")
+            print("  - 输入提示词，然后输入图片路径生成视频（先填提示词，再上传图片）")
             print("  - 输入 'quit' 或 'exit' 退出")
             print("  - 输入 'screenshot' 截图")
             print("  - 输入 'save' 保存登录状态")
+            print("  - 输入 'prompt' 仅发送提示词（不生成视频）")
             print("=" * 50)
             
             # 开始交互循环
             while True:
                 try:
-                    # 获取用户输入
-                    user_input = input("\n👤 请输入提示词: ").strip()
+                    # 获取用户输入 - 提示词
+                    prompt = input("\n👤 请输入提示词（或输入命令）: ").strip()
                     
-                    if not user_input:
+                    if not prompt:
                         continue
                     
                     # 检查退出命令
-                    if user_input.lower() in ['quit', 'exit', '退出']:
+                    if prompt.lower() in ['quit', 'exit', '退出']:
                         print("💾 正在保存登录状态...")
                         await self.save_cookies()
                         print("👋 再见！")
                         break
                     
                     # 检查截图命令
-                    if user_input.lower() == 'screenshot':
+                    if prompt.lower() == 'screenshot':
                         screenshot_path = await self.instance.screenshot()
                         print(f"📸 截图已保存: {screenshot_path}")
                         continue
                     
                     # 检查保存登录状态命令
-                    if user_input.lower() in ['save', '保存']:
+                    if prompt.lower() in ['save', '保存']:
                         await self.save_cookies()
                         print("💾 登录状态已保存")
                         continue
                     
-                    # 发送消息
-                    if await self.send_message(user_input):
-                        print("✅ 消息已发送，等待响应...")
+                    # 检查仅发送提示词命令
+                    if prompt.lower() == 'prompt':
+                        prompt_text = input("请输入提示词: ").strip()
+                        if prompt_text:
+                            if await self.send_message(prompt_text):
+                                print("✅ 提示词已发送，等待响应...")
+                                # 等待响应（最多5分钟）
+                                for i in range(300):
+                                    if not self.waiting_for_response:
+                                        break
+                                    await asyncio.sleep(1)
+                                
+                                if self.api_responses:
+                                    print(f"📹 收到 {len(self.api_responses)} 个响应")
+                                    for i, resp in enumerate(self.api_responses, 1):
+                                        print(f"  响应 {i}: {resp.get('url', 'N/A')}")
+                                else:
+                                    print("⚠️  未收到响应")
+                            else:
+                                print("❌ 发送消息失败")
+                        continue
+                    
+                    # 获取图片路径
+                    image_path = input("📷 请输入图片路径（留空则仅发送提示词）: ").strip()
+                    
+                    if image_path:
+                        # 使用新的工作流：在 grok 页面上传图片，然后在 video 页面填入提示词并提交
+                        print("🚀 开始视频生成工作流...")
+                        print("   步骤1: 在 grok 页面上传图片...")
+                        print("   步骤2: 跳转到 video 页面...")
+                        print("   步骤3: 在 video 页面填入提示词并提交...")
+                        print("   步骤4: 等待视频生成...")
                         
-                        # 等待响应（最多5分钟）
-                        for i in range(300):
-                            if not self.waiting_for_response:
-                                break
-                            await asyncio.sleep(1)
+                        result = await self.generate_video_with_image(prompt, image_path)
                         
-                        if self.api_responses:
-                            print(f"📹 收到 {len(self.api_responses)} 个响应")
-                            for i, resp in enumerate(self.api_responses, 1):
-                                print(f"  响应 {i}: {resp.get('url', 'N/A')}")
+                        if result:
+                            if result.get("status") == "completed":
+                                print("✅ 视频生成完成！")
+                                if result.get("video_url"):
+                                    print(f"📹 视频URL: {result['video_url']}")
+                                if result.get("video_urls"):
+                                    print(f"📹 视频URLs: {result['video_urls']}")
+                                if result.get("videos"):
+                                    print(f"📹 视频数据: {len(result['videos'])} 个")
+                            elif result.get("status") == "error":
+                                print(f"❌ 视频生成失败: {result.get('error', '未知错误')}")
+                            else:
+                                print(f"⚠️  视频生成状态: {result.get('status', '未知')}")
                         else:
-                            print("⚠️  未收到响应")
+                            print("⚠️  视频生成可能未完成或超时")
                     else:
-                        print("❌ 发送消息失败")
+                        # 仅发送提示词（不使用图片）
+                        if await self.send_message(prompt):
+                            print("✅ 消息已发送，等待响应...")
+                            
+                            # 等待响应（最多5分钟）
+                            for i in range(300):
+                                if not self.waiting_for_response:
+                                    break
+                                await asyncio.sleep(1)
+                            
+                            if self.api_responses:
+                                print(f"📹 收到 {len(self.api_responses)} 个响应")
+                                for i, resp in enumerate(self.api_responses, 1):
+                                    print(f"  响应 {i}: {resp.get('url', 'N/A')}")
+                            else:
+                                print("⚠️  未收到响应")
+                        else:
+                            print("❌ 发送消息失败")
                     
                 except KeyboardInterrupt:
                     print("\n\n👋 会话被中断")
