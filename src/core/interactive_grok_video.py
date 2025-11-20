@@ -66,21 +66,26 @@ class GrokVideoInteractiveClient:
             self.instance = self.framework.create_instance(self.instance_id, config)
             await self.instance.start()
             
-            # 反检测措施：添加额外的浏览器指纹伪装
+            # 反检测措施：添加全面的浏览器指纹伪装
             try:
-                # 注入反检测脚本
+                # 注入全面的反检测脚本
                 await self.instance.page.add_init_script("""
-                    // 覆盖 navigator.webdriver
+                    // ========== WebDriver 特征隐藏 ==========
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => undefined
                     });
                     
-                    // 覆盖 Chrome 特征
-                    window.chrome = {
-                        runtime: {}
-                    };
+                    // 删除 webdriver 属性
+                    delete navigator.__proto__.webdriver;
                     
-                    // 覆盖 Permissions
+                    // ========== Firefox 特征（移除 Chrome 特有特征）==========
+                    // Firefox 没有 window.chrome 对象，所以不添加
+                    // 如果存在则删除（可能是其他脚本添加的）
+                    if (window.chrome) {
+                        delete window.chrome;
+                    }
+                    
+                    // ========== Permissions API ==========
                     const originalQuery = window.navigator.permissions.query;
                     window.navigator.permissions.query = (parameters) => (
                         parameters.name === 'notifications' ?
@@ -88,17 +93,132 @@ class GrokVideoInteractiveClient:
                             originalQuery(parameters)
                     );
                     
-                    // 覆盖 Plugins
+                    // ========== Plugins 伪装（Firefox 版本）==========
                     Object.defineProperty(navigator, 'plugins', {
-                        get: () => [1, 2, 3, 4, 5]
+                        get: () => {
+                            // Firefox 常见的插件
+                            return [
+                                {
+                                    0: {type: "application/pdf", suffixes: "pdf", description: "Portable Document Format"},
+                                    description: "Portable Document Format",
+                                    filename: "internal-pdf-viewer",
+                                    length: 1,
+                                    name: "PDF Viewer"
+                                },
+                                {
+                                    0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
+                                    description: "Portable Document Format",
+                                    filename: "internal-pdf-viewer",
+                                    length: 1,
+                                    name: "Chrome PDF Plugin"
+                                }
+                            ];
+                        }
                     });
                     
-                    // 覆盖 Languages
+                    // ========== Languages ==========
+                    // 匹配真实 Firefox 的语言设置（中文优先）
                     Object.defineProperty(navigator, 'languages', {
-                        get: () => ['en-US', 'en']
+                        get: () => ['zh-CN', 'zh', 'zh-TW', 'zh-HK', 'en-US', 'en']
                     });
+                    
+                    // ========== Platform ==========
+                    Object.defineProperty(navigator, 'platform', {
+                        get: () => 'Win32'
+                    });
+                    
+                    // ========== Hardware Concurrency ==========
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {
+                        get: () => 8
+                    });
+                    
+                    // ========== Device Memory ==========
+                    Object.defineProperty(navigator, 'deviceMemory', {
+                        get: () => 8
+                    });
+                    
+                    // ========== Canvas 指纹伪装 ==========
+                    const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+                    HTMLCanvasElement.prototype.toDataURL = function(type) {
+                        if (type === 'image/png' || type === undefined) {
+                            const context = this.getContext('2d');
+                            if (context) {
+                                const imageData = context.getImageData(0, 0, this.width, this.height);
+                                for (let i = 0; i < imageData.data.length; i += 4) {
+                                    imageData.data[i] = imageData.data[i] ^ 1;
+                                }
+                                context.putImageData(imageData, 0, 0);
+                            }
+                        }
+                        return originalToDataURL.apply(this, arguments);
+                    };
+                    
+                    // ========== WebGL 指纹伪装（Firefox 版本）==========
+                    const getParameter = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                        // WebGL 常量：UNMASKED_VENDOR_WEBGL = 0x9245 (37445)
+                        // WebGL 常量：UNMASKED_RENDERER_WEBGL = 0x9246 (37446)
+                        if (parameter === 37445) {
+                            // Firefox 常见的 GPU 厂商
+                            return 'Intel Inc.';
+                        }
+                        if (parameter === 37446) {
+                            // Firefox 常见的 GPU 渲染器
+                            return 'Intel Iris OpenGL Engine';
+                        }
+                        return getParameter.apply(this, arguments);
+                    };
+                    
+                    // ========== AudioContext 指纹伪装 ==========
+                    if (window.AudioContext) {
+                        const originalCreateOscillator = AudioContext.prototype.createOscillator;
+                        AudioContext.prototype.createOscillator = function() {
+                            const oscillator = originalCreateOscillator.apply(this, arguments);
+                            const originalStart = oscillator.start;
+                            oscillator.start = function() {
+                                return originalStart.apply(this, arguments);
+                            };
+                            return oscillator;
+                        };
+                    }
+                    
+                    // ========== 字体检测伪装 ==========
+                    Object.defineProperty(document, 'fonts', {
+                        get: () => ({
+                            check: () => true,
+                            load: () => Promise.resolve([]),
+                            ready: Promise.resolve()
+                        })
+                    });
+                    
+                    // ========== Battery API ==========
+                    if (navigator.getBattery) {
+                        navigator.getBattery = () => Promise.resolve({
+                            charging: true,
+                            chargingTime: 0,
+                            dischargingTime: Infinity,
+                            level: 1
+                        });
+                    }
+                    
+                    // ========== Connection API ==========
+                    Object.defineProperty(navigator, 'connection', {
+                        get: () => ({
+                            effectiveType: '4g',
+                            rtt: 50,
+                            downlink: 10,
+                            saveData: false
+                        })
+                    });
+                    
+                    // ========== 时间戳一致性 ==========
+                    const originalDate = Date;
+                    Date.now = () => originalDate.now();
+                    Date.prototype.getTime = function() {
+                        return originalDate.prototype.getTime.apply(this, arguments);
+                    };
                 """)
-                logger.info("反检测脚本已注入")
+                logger.info("✅ 全面反检测脚本已注入")
             except Exception as e:
                 logger.warning(f"注入反检测脚本失败: {e}")
             
@@ -163,17 +283,35 @@ class GrokVideoInteractiveClient:
                                             timeout=30000)
                 
                 # 模拟人类行为：随机延迟
-                await asyncio.sleep(random.uniform(2, 4))
+                await asyncio.sleep(random.uniform(3, 5))
                 
-                # 模拟鼠标移动
+                # 模拟页面交互行为（降低被检测风险）
                 try:
-                    await self.instance.page.mouse.move(
-                        random.randint(100, 500), 
-                        random.randint(100, 500)
+                    # 1. 模拟鼠标移动（随机轨迹）
+                    for _ in range(random.randint(2, 4)):
+                        await self.instance.page.mouse.move(
+                            random.randint(100, 800), 
+                            random.randint(100, 600)
+                        )
+                        await asyncio.sleep(random.uniform(0.2, 0.5))
+                    
+                    # 2. 模拟轻微滚动
+                    await self.instance.page.evaluate(f"""
+                        window.scrollTo(0, {random.randint(50, 200)});
+                    """)
+                    await asyncio.sleep(random.uniform(0.5, 1))
+                    
+                    # 3. 模拟鼠标点击（但不触发任何操作）
+                    await self.instance.page.mouse.click(
+                        random.randint(200, 600),
+                        random.randint(200, 400),
+                        button="left",
+                        delay=random.randint(50, 150)
                     )
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
-                except:
-                    pass
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
+                    
+                except Exception as mouse_e:
+                    logger.debug(f"模拟鼠标行为时出错（可忽略）: {mouse_e}")
                 
                 logger.success("主页访问成功")
             except Exception as home_e:
@@ -306,8 +444,25 @@ class GrokVideoInteractiveClient:
             except:
                 pass
             
-            # 等待页面稳定
-            await asyncio.sleep(random.uniform(2, 4))
+            # 等待页面稳定（随机延迟，模拟人类行为）
+            await asyncio.sleep(random.uniform(3, 5))
+            
+            # 模拟页面加载后的真实用户行为
+            try:
+                # 模拟滚动查看页面
+                for i in range(random.randint(1, 3)):
+                    scroll_amount = random.randint(100, 300)
+                    await self.instance.page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                
+                # 模拟鼠标移动
+                await self.instance.page.mouse.move(
+                    random.randint(200, 600),
+                    random.randint(200, 400)
+                )
+                await asyncio.sleep(random.uniform(0.3, 0.8))
+            except:
+                pass
             
             # 检查页面是否可用
             try:
