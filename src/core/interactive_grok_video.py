@@ -50,23 +50,62 @@ class GrokVideoInteractiveClient:
         }
     
     async def setup(self):
-        """初始化设置"""
+        """初始化设置（带反检测配置）"""
         try:
-            logger.info("初始化Grok视频生成交互客户端...")
+            logger.info("初始化Grok视频生成交互客户端（反检测模式）...")
             
             # 创建配置
             config = CrawlerConfig()
-            config.headless = False  # 显示浏览器窗口
+            config.headless = False  # 显示浏览器窗口（有头模式更不容易被检测）
             config.timeout = 30000
+            
+            # 设置更真实的视窗大小（模拟真实用户）
+            config.set_desktop_viewport()  # 1280x720
             
             # 创建实例
             self.instance = self.framework.create_instance(self.instance_id, config)
             await self.instance.start()
             
+            # 反检测措施：添加额外的浏览器指纹伪装
+            try:
+                # 注入反检测脚本
+                await self.instance.page.add_init_script("""
+                    // 覆盖 navigator.webdriver
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    // 覆盖 Chrome 特征
+                    window.chrome = {
+                        runtime: {}
+                    };
+                    
+                    // 覆盖 Permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                    
+                    // 覆盖 Plugins
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    
+                    // 覆盖 Languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en']
+                    });
+                """)
+                logger.info("反检测脚本已注入")
+            except Exception as e:
+                logger.warning(f"注入反检测脚本失败: {e}")
+            
             # 设置网络监听
             await self.setup_network_listener()
             
-            # 加载已保存的cookies
+            # 加载已保存的cookies（已登录状态可以降低被检测风险）
             await self.load_cookies()
             
             logger.success("初始化完成")
@@ -110,40 +149,168 @@ class GrokVideoInteractiveClient:
             logger.error(f"保存登录状态失败: {e}")
     
     async def navigate_to_grok(self):
-        """导航到Grok页面"""
+        """导航到Grok页面（带反机器人检测措施，优先通过侧边栏跳转，登录后再跳转）"""
         try:
-            logger.info("正在访问Grok页面...")
+            import random
             
-            # 导航到Grok主页
+            logger.info("正在访问Grok页面（使用反检测措施）...")
+            
+            # 步骤1: 访问Grok主页
             try:
-                await self.instance.page.goto("https://grok.com/imagine", 
+                logger.info("步骤1: 访问Grok主页...")
+                await self.instance.page.goto("https://grok.com", 
                                             wait_until="domcontentloaded", 
-                                            timeout=15000)
-                logger.success("页面导航成功")
-            except Exception as nav_e:
-                logger.warning(f"导航可能超时，检查页面状态: {nav_e}")
+                                            timeout=30000)
                 
-                # 检查页面是否实际已经加载
+                # 模拟人类行为：随机延迟
+                await asyncio.sleep(random.uniform(2, 4))
+                
+                # 模拟鼠标移动
                 try:
-                    current_url = self.instance.page.url
-                    if "grok.com" in current_url:
-                        logger.info(f"页面已加载，当前URL: {current_url}")
-                    else:
-                        # 如果URL不对，再尝试一次
-                        logger.info("尝试重新导航...")
-                        await self.instance.page.goto("https://grok.com/imagine", 
-                                                    wait_until="load", 
-                                                    timeout=10000)
-                except Exception as retry_e:
-                    logger.error(f"重试导航失败: {retry_e}")
+                    await self.instance.page.mouse.move(
+                        random.randint(100, 500), 
+                        random.randint(100, 500)
+                    )
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                except:
+                    pass
+                
+                logger.success("主页访问成功")
+            except Exception as home_e:
+                logger.error(f"访问主页失败: {home_e}")
+                return False
+            
+            # 步骤2: 检查是否有反机器人检测页面
+            try:
+                page_content = await self.instance.page.content()
+                if "anti-bot" in page_content.lower() or "cloudflare" in page_content.lower():
+                    logger.warning("检测到反机器人页面，等待验证...")
+                    await asyncio.sleep(5)
+            except:
+                pass
+            
+            # 步骤3: 检查登录状态（重要：登录前不要跳转到imagine）
+            logger.info("步骤2: 检查登录状态...")
+            is_logged_in = await self.check_is_logged_in()
+            needs_login = await self.check_login_required()
+            
+            if needs_login or not is_logged_in:
+                logger.warning("⚠️  检测到未登录状态，等待用户登录...")
+                logger.warning("   请在浏览器中完成登录，登录完成后程序将自动继续")
+                
+                # 等待用户登录（最多等待60秒）
+                max_wait = 600
+                for i in range(max_wait):
+                    await asyncio.sleep(1)
+                    
+                    # 每5秒检查一次登录状态
+                    if i % 5 == 0:
+                        is_logged_in = await self.check_is_logged_in()
+                        needs_login = await self.check_login_required()
+                        
+                        if is_logged_in and not needs_login:
+                            logger.success("✅ 检测到已登录，继续执行...")
+                            break
+                        
+                        if i > 0:
+                            logger.info(f"等待登录中... ({i}/{max_wait}秒)")
+                
+                # 最终检查
+                is_logged_in = await self.check_is_logged_in()
+                needs_login = await self.check_login_required()
+                
+                if not is_logged_in or needs_login:
+                    logger.error("❌ 登录超时或登录失败，无法继续")
+                    logger.error("   请手动登录后重试，或检查登录状态")
                     return False
             
+            # 步骤4: 已登录，通过侧边栏跳转到imagine页面
+            logger.info("步骤3: 通过侧边栏跳转到imagine页面...")
+            
+            # 优先尝试点击侧边栏的 "Imagine" 链接
+            try:
+                # 等待侧边栏加载
+                await asyncio.sleep(random.uniform(1, 2))
+                
+                # 查找侧边栏中的 Imagine 链接
+                imagine_link = await self.instance.page.query_selector('a[href="/imagine"], [href="/imagine"][data-sidebar="menu-button"]')
+                
+                if not imagine_link:
+                    # 尝试通过文本查找
+                    imagine_link = await self.instance.page.query_selector('a:has-text("Imagine"), [data-sidebar="menu-button"]:has-text("Imagine")')
+                
+                if imagine_link and await imagine_link.is_visible():
+                    logger.info("找到侧边栏 Imagine 链接，准备点击...")
+                    
+                    # 模拟鼠标移动到链接
+                    try:
+                        box = await imagine_link.bounding_box()
+                        if box:
+                            await self.instance.page.mouse.move(
+                                box['x'] + box['width'] / 2,
+                                box['y'] + box['height'] / 2
+                            )
+                            await asyncio.sleep(random.uniform(0.3, 0.8))
+                    except:
+                        pass
+                    
+                    # 点击链接
+                    await imagine_link.click()
+                    logger.success("✅ 已通过侧边栏跳转到imagine页面")
+                    
+                    # 等待页面跳转
+                    await asyncio.sleep(random.uniform(2, 3))
+                    
+                    # 验证是否成功跳转
+                    current_url = self.instance.page.url
+                    if "/imagine" in current_url:
+                        logger.success("成功跳转到imagine页面")
+                    else:
+                        logger.warning(f"点击后URL未变化，当前URL: {current_url}")
+                        # 如果点击失败，使用备用方法
+                        raise Exception("侧边栏点击未成功跳转")
+                else:
+                    logger.warning("未找到侧边栏 Imagine 链接，使用备用方法...")
+                    raise Exception("未找到侧边栏链接")
+                    
+            except Exception as sidebar_e:
+                logger.warning(f"通过侧边栏跳转失败: {sidebar_e}")
+                logger.info("使用备用方法：直接导航到imagine页面...")
+                
+                # 备用方法：直接导航
+                try:
+                    await self.instance.page.goto("https://grok.com/imagine", 
+                                                wait_until="domcontentloaded", 
+                                                timeout=30000)
+                    logger.success("备用方法：直接导航成功")
+                except Exception as nav_e:
+                    logger.error(f"备用导航方法也失败: {nav_e}")
+                    return False
+            
+            # 步骤5: 检查是否被反机器人检测拦截
+            try:
+                page_text = await self.instance.page.inner_text('body')
+                if "Request rejected by anti-bot rules" in page_text or "anti-bot" in page_text.lower():
+                    logger.error("❌ 检测到反机器人拦截！")
+                    logger.warning("建议：")
+                    logger.warning("  1. 检查是否需要手动验证")
+                    logger.warning("  2. 尝试使用代理")
+                    logger.warning("  3. 增加访问间隔时间")
+                    logger.warning("  4. 确保已登录账号")
+                    
+                    await asyncio.sleep(10)
+                    
+                    page_text = await self.instance.page.inner_text('body')
+                    if "Request rejected by anti-bot rules" in page_text:
+                        return False
+            except:
+                pass
+            
             # 等待页面稳定
-            await asyncio.sleep(3)
+            await asyncio.sleep(random.uniform(2, 4))
             
             # 检查页面是否可用
             try:
-                # 尝试查找页面的基本元素
                 await self.instance.page.wait_for_selector('body', timeout=5000)
                 logger.success("页面基本元素已加载")
             except Exception as e:
@@ -155,7 +322,7 @@ class GrokVideoInteractiveClient:
             except Exception as e:
                 logger.warning(f"截图失败，跳过: {e}")
             
-            logger.success("成功访问Grok页面")
+            logger.success("成功访问Grok imagine页面")
             return True
             
         except Exception as e:
@@ -163,24 +330,84 @@ class GrokVideoInteractiveClient:
             return False
     
     async def check_login_required(self):
-        """检测是否出现登录弹窗"""
+        """检测是否需要登录（检查多个登录相关的元素）"""
         try:
-            # 检查登录弹窗是否存在
+            # 方法1: 检查登录弹窗或登录按钮
             login_modal = await self.instance.page.query_selector(self.selectors["login_modal"])
             if login_modal and await login_modal.is_visible():
-                logger.error("检测到登录弹窗，需要用户登录")
+                logger.warning("检测到登录弹窗，需要用户登录")
                 return True
             
-            # 检查登录按钮
             login_button = await self.instance.page.query_selector(self.selectors["login_button"])
             if login_button and await login_button.is_visible():
-                logger.error("检测到登录按钮，需要用户登录")
+                logger.warning("检测到登录按钮，需要用户登录")
                 return True
             
+            # 方法2: 检查页面中是否有 "Sign in" 或 "Log in" 文本
+            try:
+                page_text = await self.instance.page.inner_text('body')
+                if "sign in" in page_text.lower() or "log in" in page_text.lower():
+                    # 检查是否在主要内容区域（排除页脚等）
+                    sign_in_elements = await self.instance.page.query_selector_all('a[href*="sign-in"], a[href*="login"], button:has-text("Sign in"), button:has-text("Log in")')
+                    for elem in sign_in_elements:
+                        if await elem.is_visible():
+                            logger.warning("检测到登录链接/按钮，需要用户登录")
+                            return True
+            except:
+                pass
+            
+            # 方法3: 检查是否有侧边栏（已登录用户通常有侧边栏）
+            try:
+                sidebar = await self.instance.page.query_selector('[data-sidebar="sidebar"]')
+                if sidebar and await sidebar.is_visible():
+                    # 有侧边栏，可能是已登录
+                    logger.info("检测到侧边栏，可能已登录")
+                    return False
+            except:
+                pass
+            
+            # 方法4: 检查 URL 是否包含登录相关路径
+            current_url = self.instance.page.url
+            if "/sign-in" in current_url or "/login" in current_url:
+                logger.warning("当前在登录页面，需要用户登录")
+                return True
+            
+            # 默认认为已登录（如果无法确定）
             return False
             
         except Exception as e:
             logger.warning(f"检测登录状态失败: {e}")
+            return False
+    
+    async def check_is_logged_in(self):
+        """检查是否已登录（更积极的检查）"""
+        try:
+            # 检查是否有侧边栏（已登录用户的特征）
+            sidebar = await self.instance.page.query_selector('[data-sidebar="sidebar"]')
+            if sidebar and await sidebar.is_visible():
+                # 检查侧边栏中是否有 "Imagine" 链接（已登录用户才能看到）
+                imagine_link = await self.instance.page.query_selector('a[href="/imagine"], [href="/imagine"]')
+                if imagine_link:
+                    logger.info("检测到已登录状态（有侧边栏和Imagine链接）")
+                    return True
+            
+            # 检查是否在 imagine 页面（如果能访问说明已登录）
+            current_url = self.instance.page.url
+            if "/imagine" in current_url:
+                logger.info("当前在imagine页面，认为已登录")
+                return True
+            
+            # 检查是否有用户相关的元素
+            user_elements = await self.instance.page.query_selector_all('[data-sidebar="footer"], [class*="user"], [class*="profile"]')
+            if user_elements:
+                for elem in user_elements:
+                    if await elem.is_visible():
+                        logger.info("检测到用户相关元素，认为已登录")
+                        return True
+            
+            return False
+        except Exception as e:
+            logger.debug(f"检查登录状态时出错: {e}")
             return False
     
     async def ensure_video_skill_ready(self):
@@ -298,8 +525,10 @@ class GrokVideoInteractiveClient:
             return False
     
     async def upload_reference_image(self, image_path: str) -> bool:
-        """上传参考图片（在 grok.html 页面，上传后会跳转到 video.html）"""
+        """上传参考图片（在 grok.html 页面，上传后会跳转到 video.html，带反检测措施）"""
         try:
+            import random
+            
             logger.info(f"开始上传参考图片: {image_path}")
             
             # 检查图片文件是否存在
@@ -315,8 +544,8 @@ class GrokVideoInteractiveClient:
                 if not await self.navigate_to_grok():
                     return False
             
-            # 等待一下让界面稳定
-            await asyncio.sleep(1)
+            # 反检测措施：随机延迟，模拟人类思考时间
+            await asyncio.sleep(random.uniform(1.5, 3))
             
             # 查找文件输入元素 - 尝试多种方法
             file_input = None
@@ -400,12 +629,14 @@ class GrokVideoInteractiveClient:
             return False
     
     async def check_and_fill_prompt_in_video_page(self, prompt: str) -> bool:
-        """在 video.html 页面填入提示词并提交（无论是否已有提示词，都会覆盖并填入新的提示词）"""
+        """在 video.html 页面填入提示词并提交（无论是否已有提示词，都会覆盖并填入新的提示词，带反检测措施）"""
         try:
+            import random
+            
             logger.info("在 video.html 页面填入提示词并提交...")
             
-            # 等待页面稳定
-            await asyncio.sleep(2)
+            # 反检测措施：随机延迟，模拟人类阅读和思考时间
+            await asyncio.sleep(random.uniform(2, 4))
             
             # 查找 textarea 输入框
             textarea = await self.instance.page.query_selector('textarea[aria-label*="Make a video" i]')
@@ -433,17 +664,24 @@ class GrokVideoInteractiveClient:
             # 无论是否已有提示词，都填入新的提示词
             logger.info("正在填入提示词...")
             
+            # 反检测措施：模拟人类输入行为
             # 点击输入框获得焦点
             await textarea.click()
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(0.5, 1))
             
             # 清空输入框
             await textarea.fill("")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(random.uniform(0.3, 0.8))
             
-            # 填入提示词
-            await textarea.fill(prompt)
-            await asyncio.sleep(1)
+            # 填入提示词（模拟逐字输入，更真实）
+            # 使用 type 方法而不是 fill，模拟真实打字
+            try:
+                await textarea.type(prompt, delay=random.randint(50, 150))  # 随机延迟50-150ms每个字符
+            except:
+                # 如果 type 失败，使用 fill
+                await textarea.fill(prompt)
+            
+            await asyncio.sleep(random.uniform(1, 2))
             
             logger.success(f"提示词已填入: {prompt[:50]}...")
             
@@ -473,9 +711,22 @@ class GrokVideoInteractiveClient:
                     logger.warning("提交按钮被禁用，可能正在处理中")
                     return False
                 
+                # 反检测措施：点击前稍微移动鼠标（模拟人类行为）
+                try:
+                    box = await submit_button.bounding_box()
+                    if box:
+                        # 移动到按钮附近
+                        await self.instance.page.mouse.move(
+                            box['x'] + box['width'] / 2 + random.randint(-10, 10),
+                            box['y'] + box['height'] / 2 + random.randint(-10, 10)
+                        )
+                        await asyncio.sleep(random.uniform(0.3, 0.8))
+                except:
+                    pass
+                
                 logger.info("点击提交按钮生成视频...")
                 await submit_button.click()
-                await asyncio.sleep(2)
+                await asyncio.sleep(random.uniform(2, 3))
                 logger.success("已点击提交按钮，视频生成已启动")
                 return True
             else:
