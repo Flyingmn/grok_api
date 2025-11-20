@@ -10,8 +10,8 @@
     "service_name": "豆包"
   },
   "grok": {
-    "api_port": 8816,
-    "management_port": 8817,
+    "api_port": 8818,
+    "management_port": 8819,
     "service_name": "grok"
   },
   "default": {
